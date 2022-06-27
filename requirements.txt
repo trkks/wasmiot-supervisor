@@ -1,0 +1,7 @@
+flask
+zeroconf
+pyopenssl
+
+pywasm3
+
+-e .
