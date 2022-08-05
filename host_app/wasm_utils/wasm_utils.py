@@ -18,6 +18,12 @@ wasm_modules = {
         "modules/app1.wasm",
         0,
         "modules/app1.json"
+        ),
+    "app": WasmModule(
+        "app.wasm",
+        "modules/app.wasm",
+        0,
+        "modules/app.json"
         )
     }
 

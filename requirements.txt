@@ -1,6 +1,7 @@
 flask
 zeroconf
 pyopenssl
+adafruit-circuitpython-dht
 
 pywasm3
 
