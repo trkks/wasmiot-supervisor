@@ -12,6 +12,8 @@ import logging
 from zeroconf import ServiceInfo, Zeroconf
 import socket
 
+import wasm_utils.wasm_utils as wu
+
 MODULE_FOLDER = './modules'
 PARAMS_FOLDER = './params'
 
@@ -131,6 +133,18 @@ def get_listening_address(app: Flask) -> Tuple[str, int]:
 @bp.route('/.well-known/wot-thing-description')
 def thingi_description():
     return jsonify({'status':'ok', 'addr': get_listening_address(current_app)})
+
+@bp.route('/modules/<module_name>/<function_name>')
+def run_module_function(module_name = None, function_name = None):
+    if not module_name or not function_name:
+        return jsonify({'result': 'not found'})
+    #param = request.args.get('param', default=1, type=int)
+    #params = request.args.getlist('param')
+    wu.load_module(wu.wasm_modules[module_name])
+    types = wu.get_arg_types(function_name)  # get argument types
+    params = [request.args.get('param' + str(i+1), type=t) for i, t in enumerate(types)]  # get parameters from get request (named param1, param2, etc.) with given types
+    res = wu.run_function(function_name, params)
+    return jsonify({'result': res})
 
 @bp.route('/upload_module', methods=['POST'])
 def upload_module():

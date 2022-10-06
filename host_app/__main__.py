@@ -11,12 +11,12 @@ if __name__ == "__main__":
     os.environ.setdefault("FLASK_DEBUG", "1")
 
 
-    print('starting modules')
-    wasm_daemon = threading.Thread(name='wasm_daemon',
-                                   daemon=True,
-                                   target=wa.start_modules,
-                                     )
-    wasm_daemon.start()
+    #print('starting modules')
+    #wasm_daemon = threading.Thread(name='wasm_daemon',
+    #                               daemon=True,
+    #                               target=wa.start_modules,
+    #                                 )
+    #wasm_daemon.start()
 
     app = flask_app.create_app()
 
