@@ -12,6 +12,9 @@ import logging
 from zeroconf import ServiceInfo, Zeroconf
 import socket
 
+import cv2
+import numpy as np
+
 import wasm_utils.wasm_utils as wu
 
 MODULE_FOLDER = './modules'
@@ -145,6 +148,24 @@ def run_module_function(module_name = None, function_name = None):
     params = [request.args.get('param' + str(i+1), type=t) for i, t in enumerate(types)]  # get parameters from get request (named param1, param2, etc.) with given types
     res = wu.run_function(function_name, params)
     return jsonify({'result': res})
+
+@bp.route('/img/<module_name>/<function_name>', methods=['POST'])
+def run_grayscale(module_name = None, function_name = None):
+    if not module_name or not function_name:
+        return jsonify({'result': 'function of module not found'})
+    wu.load_module(wu.wasm_modules[module_name])
+    file = request.files['img']
+    #file.save('image.png')
+    filebytes = np.fromstring(file.read(), np.uint8)
+    img = cv2.imdecode(filebytes, cv2.IMREAD_UNCHANGED)
+    print(img.shape)
+    shape = img.shape
+    img_bytes = np.array(img).flatten().tobytes()
+    gs_img_bytes = wu.run_data_function(function_name, wu.wasm_modules[module_name].data_ptr, img_bytes)
+    result = np.array(gs_img_bytes).reshape((shape))
+    cv2.imwrite("gsimg.png", result)
+    return jsonify({'status': 'success'})
+
 
 @bp.route('/upload_module', methods=['POST'])
 def upload_module():

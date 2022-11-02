@@ -7,11 +7,12 @@ from .wasm3_api import rt, env
 class WasmModule:
     """Class for describing WebAssembly modules"""
 
-    def __init__(self, name="", path="", size=0, paramPath=""):
+    def __init__(self, name="", path="", size=0, paramPath="", data_ptr=""):
         self.name = name
         self.path = path
         self.size = size
         self.paramPath = paramPath
+        self.data_ptr = data_ptr
         self.task_handle = None
 
 # wasm3 maps wasm function argument types as follows:
@@ -45,6 +46,13 @@ wasm_modules = {
         "../modules/fibo.wasm",
         0,
         "modules/fibo.json",
+        ),
+    "test": WasmModule(
+        "test.wasm",
+        "../modules/test.wasm",
+        0,
+        "modules/test.json",
+        "get_img_ptr"
         )
     }
 
@@ -57,6 +65,14 @@ def load_module(module):
 def run_function(fname, params):    # parameters as list: [1,2,3]
     func = rt.find_function(fname)
     return func(*params)
+
+def run_data_function(fname, data_ptr, data):
+    func = rt.find_function(fname)
+    ptr = rt.find_function(data_ptr)()
+    mem = rt.get_memory(0)
+    mem[ptr:ptr+len(data)] = data
+    func()
+    return mem[ptr:ptr+len(data)]
 
 def get_arg_types(fname):
     func = rt.find_function(fname)
