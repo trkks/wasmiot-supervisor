@@ -53,7 +53,13 @@ wasm_modules = {
         0,
         "modules/test.json",
         "get_img_ptr"
-        )
+        ),
+    "camera": WasmModule(
+        "camera.wasm",
+        "../modules/camera.wasm",
+        0,
+        "modules/camera.json",
+    )
     }
 
 def load_module(module):
@@ -64,6 +70,7 @@ def load_module(module):
 
 def run_function(fname, params):    # parameters as list: [1,2,3]
     func = rt.find_function(fname)
+    if not params: return func()
     return func(*params)
 
 def run_data_function(fname, data_ptr, data):

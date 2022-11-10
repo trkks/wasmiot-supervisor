@@ -150,7 +150,30 @@ def run_module_function(module_name = None, function_name = None):
     return jsonify({'result': res})
 
 @bp.route('/img/<module_name>/<function_name>', methods=['POST'])
+def run_img_function(module_name = None, function_name = None):
+    """Image comes as a string of bytes (in file attribute)"""
+    if not module_name or not function_name:
+        return jsonify({'result': 'function of module not found'})
+    wu.load_module(wu.wasm_modules[module_name])
+    file = request.files['img']
+    img = file.read()
+    print(type(img))
+    print(len(img))
+    #file.save('image.png')
+    #filebytes = np.fromstring(file.read(), np.uint8)
+    #img = cv2.imdecode(filebytes, cv2.IMREAD_UNCHANGED)
+    #print(img.shape)
+    shape = (480, 640, 3)
+    #img_bytes = np.array(img).flatten().tobytes()
+    img_bytes = img
+    gs_img_bytes = wu.run_data_function(function_name, wu.wasm_modules[module_name].data_ptr, img_bytes)
+    result = np.array(gs_img_bytes).reshape((shape))
+    cv2.imwrite("gsimg2.png", result)
+    return jsonify({'status': 'success'})
+
+@bp.route('/img2/<module_name>/<function_name>', methods=['POST'])
 def run_grayscale(module_name = None, function_name = None):
+    """Image comes as file"""
     if not module_name or not function_name:
         return jsonify({'result': 'function of module not found'})
     wu.load_module(wu.wasm_modules[module_name])
@@ -158,7 +181,7 @@ def run_grayscale(module_name = None, function_name = None):
     #file.save('image.png')
     filebytes = np.fromstring(file.read(), np.uint8)
     img = cv2.imdecode(filebytes, cv2.IMREAD_UNCHANGED)
-    print(img.shape)
+    #print(img.shape)
     shape = img.shape
     img_bytes = np.array(img).flatten().tobytes()
     gs_img_bytes = wu.run_data_function(function_name, wu.wasm_modules[module_name].data_ptr, img_bytes)
