@@ -4,15 +4,17 @@ import requests
 import cv2
 import numpy as np
 
+from utils.configuration import remote_functions, modules
+
 env = wasm3.Environment()
 rt = env.new_runtime(4096)
 
-remote_functions = {
-    'convert2Grayscale': {
-        'host': 'http://localhost:5000/img/test/convert2Grayscale',
-        'token': None
-    }
-}
+#remote_functions = {
+#    'convert2Grayscale': {
+#        'host': 'http://localhost:5000/img/test/convert2Grayscale',
+#        'token': None
+#    }
+#}
 
 def m3_python_clock_ms():
     return int(round(time() * 1000))
@@ -96,4 +98,3 @@ def link_functions(mod):
     mod.link_function(camera, "takeImage", "v(i)", m3_python_takeImage)
     mod.link_function(dht, "getTemperature", "f()", m3_python_getTemperature)
     mod.link_function(dht, "getHumidity", "f()", m3_python_getHumidity)
-
