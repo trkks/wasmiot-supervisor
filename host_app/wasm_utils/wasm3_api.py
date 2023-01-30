@@ -4,7 +4,7 @@ import requests
 import cv2
 import numpy as np
 
-from utils.configuration import remote_functions, modules
+from host_app.utils.configuration import remote_functions, modules
 
 env = wasm3.Environment()
 rt = env.new_runtime(4096)

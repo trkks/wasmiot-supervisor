@@ -1,10 +1,12 @@
 from pathlib import Path
 import json
+import os
 
-CONFIG_DIR = Path('../configs')
-
+# From: https://stackoverflow.com/questions/918154/relative-paths-in-python
+CONFIG_DIR = Path(os.path.join(os.path.dirname(__file__), '../configs'))
 
 def get_remote_functions():
+    print(CONFIG_DIR / 'remote_functions.json')
     with (CONFIG_DIR / 'remote_functions.json').open()  as f:
         return json.load(f)
 
