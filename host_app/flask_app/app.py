@@ -20,9 +20,9 @@ import wasm_utils.wasm_utils as wu
 MODULE_FOLDER = './modules'
 PARAMS_FOLDER = './params'
 
-bp = Blueprint('thingi', __name__)
+bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(os.environ["FLASK_APP"])
 
 def create_app(*args, **kwargs) -> Flask:
     """
@@ -30,7 +30,7 @@ def create_app(*args, **kwargs) -> Flask:
 
     Registers the blueprint and initializes zeroconf.
     """
-    app = Flask(__name__, *args, **kwargs)
+    app = Flask(os.environ["FLASK_APP"], *args, **kwargs)
 
     app.config.update({
         'secret_key': 'dev',
