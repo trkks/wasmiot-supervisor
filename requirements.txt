@@ -1,7 +1,13 @@
 flask
 zeroconf
 pyopenssl
+numpy
+requests
 adafruit-circuitpython-dht
+
+# Recommended for Docker
+# See 3.b from https://pypi.org/project/opencv-python/
+opencv-python-headless
 
 pywasm3
 
