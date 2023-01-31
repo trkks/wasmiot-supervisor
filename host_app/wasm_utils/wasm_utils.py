@@ -1,8 +1,8 @@
 import wasm3
 import threading
 
-from host_app.wasm_utils import wasm3_api as w3
-from host_app.wasm_utils.wasm3_api import rt, env
+from . import wasm3_api as w3
+from .wasm3_api import rt, env
 
 class WasmModule:
     """Class for describing WebAssembly modules"""

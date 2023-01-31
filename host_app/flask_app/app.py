@@ -15,7 +15,7 @@ import socket
 import cv2
 import numpy as np
 
-from host_app.wasm_utils import wasm_utils as wu
+import wasm_utils.wasm_utils as wu
 
 MODULE_FOLDER = './modules'
 PARAMS_FOLDER = './params'

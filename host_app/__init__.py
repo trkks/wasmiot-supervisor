@@ -1,1 +1,1 @@
-from host_app.flask_app.app import create_app
+from .app import create_app
