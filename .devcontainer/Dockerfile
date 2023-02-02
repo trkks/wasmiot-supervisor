@@ -21,5 +21,9 @@ RUN pip3 --disable-pip-version-check --no-cache-dir install -r requirements.txt
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends libgpiod2
 
+# Move to correct directory for running the app (handles module paths imports).
+WORKDIR /app/host_app
+CMD ["python", "__main__"]
+
 # [Optional] Uncomment this line to install global node packages.
 # RUN su vscode -c "source /usr/local/share/nvm/nvm.sh && npm install -g <your-package-here>" 2>&1
