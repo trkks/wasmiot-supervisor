@@ -10,12 +10,20 @@ RUN if [ "${NODE_VERSION}" != "none" ]; then su vscode -c "umask 0002 && . /usr/
 
 RUN su vscode -c "mkdir -p /home/vscode/.vscode-server/extensions"
 
+# Cache dependencies.
+COPY requirements.txt requirements.txt
+
+# __HORRIBLE__ (but funny) hack to allow fetching the dependencies even if the
+# requirements.txt file contains "-e ." TODO Find out why it is even needed.
+RUN cat .\requirements.txt | python -c "from sys import stdin; import os; print(os.linesep.join(filter(lambda x: x[:2] != '-e', stdin.read().splitlines())))" > requirements.txt
+
+RUN pip3 --disable-pip-version-check --no-cache-dir install -r requirements.txt
+
 WORKDIR /app
 
 ENV FLASK_APP "thingi"
 
 COPY . .
-RUN pip3 --disable-pip-version-check --no-cache-dir install -r requirements.txt
 
 # [Optional] Uncomment this section to install additional OS packages.
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
