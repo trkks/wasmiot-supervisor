@@ -168,7 +168,7 @@ def run_img_function(module_name = None, function_name = None):
     img_bytes = img
     gs_img_bytes = wu.run_data_function(function_name, wu.wasm_modules[module_name].data_ptr, img_bytes)
     result = np.array(gs_img_bytes).reshape((shape))
-    cv2.imwrite("gsimg2.png", result)
+    cv2.imwrite("../output/gsimg2.png", result)
     return jsonify({'status': 'success'})
 
 @bp.route('/img2/<module_name>/<function_name>', methods=['POST'])
