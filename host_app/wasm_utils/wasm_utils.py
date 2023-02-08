@@ -1,6 +1,7 @@
 import wasm3
 import threading
 
+from utils.configuration import remote_functions, modules
 from . import wasm3_api as w3
 from .wasm3_api import rt, env
 
@@ -28,39 +29,46 @@ arg_types = {
     4: float
 }
 
-wasm_modules = {
-    #"app1": WasmModule(
-    #    "app1.wasm", 
-    #    "modules/app1.wasm",
-    #    0,
-    #    "modules/app1.json"
-    #    ),
-    "app2": WasmModule(
-        "app2.wasm",
-        "modules/app2.wasm",
-        0,
-        "modules/app2.json"
-        ),
-    "fibo": WasmModule(
-        "fibo.wasm",
-        "../modules/fibo.wasm",
-        0,
-        "modules/fibo.json",
-        ),
-    "test": WasmModule(
-        "test.wasm",
-        "../modules/test.wasm",
-        0,
-        "modules/test.json",
-        "get_img_ptr"
-        ),
-    "camera": WasmModule(
-        "camera.wasm",
-        "../modules/camera.wasm",
-        0,
-        "modules/camera.json",
-    )
-    }
+wasm_modules = {}
+for name, details in modules.items():
+    wasm_modules[name] = WasmModule(name=name,
+                                    path=details["path"],
+                                    size=details["size"],
+                                    paramPath=details["paramPath"],
+                                    data_ptr=details["data_ptr"] if "data_ptr" in details else "")
+#wasm_modules = {
+#    #"app1": WasmModule(
+#    #    "app1.wasm", 
+#    #    "modules/app1.wasm",
+#    #    0,
+#    #    "modules/app1.json"
+#    #    ),
+#    "app2": WasmModule(
+#        "app2.wasm",
+#        "modules/app2.wasm",
+#        0,
+#        "modules/app2.json"
+#        ),
+#    "fibo": WasmModule(
+#        "fibo.wasm",
+#        "../modules/fibo.wasm",
+#        0,
+#        "modules/fibo.json",
+#        ),
+#    "test": WasmModule(
+#        "test.wasm",
+#        "../modules/test.wasm",
+#        0,
+#        "modules/test.json",
+#        "get_img_ptr"
+#        ),
+#    "camera": WasmModule(
+#        "camera.wasm",
+#        "../modules/camera.wasm",
+#        0,
+#        "modules/camera.json",
+#    )
+#    }
 
 def load_module(module):
     with open(module.path, "rb") as f:

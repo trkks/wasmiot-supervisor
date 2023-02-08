@@ -14,5 +14,6 @@ def get_modules():
 
 
 remote_functions = get_remote_functions()
+print(remote_functions)
 
 modules = get_modules()
