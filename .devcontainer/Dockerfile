@@ -6,9 +6,13 @@ FROM mcr.microsoft.com/vscode/devcontainers/python:0-${VARIANT} AS base
 
 WORKDIR /app
 
-COPY . .
+# Copy needed files to app root for installing deps beforehand.
+COPY ["requirements.txt", "setup.py", "./"]
 
 RUN pip3 --disable-pip-version-check --no-cache-dir install -r requirements.txt
+
+# Copy the rest.
+COPY . .
 
 ENV FLASK_APP "thingi"
 
