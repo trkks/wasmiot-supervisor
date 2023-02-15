@@ -21,9 +21,11 @@ ENV FLASK_APP ${DEVICE_NAME}
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends libgpiod2
 
+FROM base AS run
+
 # Move to correct directory for running the app (handles module paths imports).
 WORKDIR /app/host_app
-CMD ["python", "__main__"]
+CMD ["python", "__main__.py"]
 
 FROM base AS vscode-devcontainer
 
