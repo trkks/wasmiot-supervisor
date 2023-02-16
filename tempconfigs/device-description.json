@@ -1,0 +1,45 @@
+{
+    "@context": "https://www.w3.org/2022/wot/td/v1.1",
+    "@type": "Thing",
+    "title": "Laptop with webcam",
+    "description": "A laptop with a camera for taking pictures with",
+    "properties": {
+        "platform": {
+            "description": "Hardware information about the Thing",
+            "type": "object",
+            "readOnly": true,
+            "properties": {
+                "memory": {
+                    "type": "object",
+                    "properties": {
+                        "bytes": { "type": "number" }
+                    }
+                },
+                "cpuGrading": { 
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                }
+            },
+            "forms": [{
+                "op": "readproperty",
+                "href": "/property/meta/platform",
+                "contentType": "application/json"
+            }]
+        }
+    },
+    "actions": {
+        "takePicture": {
+            "description": "Capture and receive a picture from where the camera is pointing",
+            "forms": [{
+                "op": "invokeaction",
+                "href": "/action/camera",
+                "contentType": "image/png"
+            }]
+        }
+    },
+    "security": "TODO: Mandatory",
+    "securityDefinitions": {
+        "scheme": "TODO: Mandatory"
+    }
+}

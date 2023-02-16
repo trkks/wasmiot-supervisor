@@ -14,6 +14,20 @@ RUN pip3 --disable-pip-version-check --no-cache-dir install -r requirements.txt
 # Copy the rest.
 COPY . .
 
+# TODO: Download the config file to image. NOTE: Fails if ARG not used.
+WORKDIR /app/configs
+ARG DEVICE_TYPE
+# TEMPORARY: For now just copy static file from host.
+COPY ../tempconfigs/device-description.json .
+# Check that ARG was set. From
+# https://stackoverflow.com/questions/38438933/how-to-make-a-build-arg-mandatory-during-docker-build
+RUN test -n $DEVICE_TYPE
+# TODO: Is there a better way? Requires authentication atm...
+# NOTE: Not tested as functional! From:
+# https://stackoverflow.com/questions/24463229/download-a-gitlab-private-repository
+#RUN wget https://gitlab.jyu.fi/wasmiot/wasmiot-orchestrator/-/raw/main/client/files/${DEVICE_TYPE}.device-description.json?private_token=${PRIVATE_GITLAB_TOKEN} --output-document ./device-description.json
+
+
 ARG DEVICE_NAME
 ENV FLASK_APP ${DEVICE_NAME}
 
