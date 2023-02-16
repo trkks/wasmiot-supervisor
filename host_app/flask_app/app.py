@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 import wasm_utils.wasm_utils as wu
+from utils.configuration import get_device_description
 
 MODULE_FOLDER = './modules'
 PARAMS_FOLDER = './params'
@@ -135,7 +136,7 @@ def get_listening_address(app: Flask) -> Tuple[str, int]:
 
 @bp.route('/.well-known/wot-thing-description')
 def thingi_description():
-    return jsonify({'status':'ok', 'addr': get_listening_address(current_app)})
+    return jsonify(get_device_description())
 
 @bp.route('/modules/<module_name>/<function_name>')
 def run_module_function(module_name = None, function_name = None):
