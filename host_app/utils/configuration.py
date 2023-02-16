@@ -20,6 +20,25 @@ def get_device_description():
     with (CONFIG_DIR / 'device-description.json').open("r") as f:
         return json.load(f)
 
+def get_device_platform_info():
+    """
+    TODO: Load device computing-capability -info from JSON or read from device
+    example by for using psutil https://github.com/giampaolo/psutil.  NOTE:
+    Fails by design if description is missing because no reason to continue.
+    """
+    #with (CONFIG_DIR / "platform-info.json") as f:
+    #    return json.load(f)
+
+    # ~Hardcoded~ values.
+    from random import random, randrange
+    to_bytes = lambda gb: gb * 1_000_000_000
+    return {
+        "memory": {
+            "bytes": to_bytes(randrange(4, 64, 4)) # Try to emulate different gi_GA_bytes of RAM.
+        },
+        "cpuGrading": random()
+    }
+
 def _check_open(path, obj):
     """
     Check if path to and file at the end of it exist and if not, create them and
