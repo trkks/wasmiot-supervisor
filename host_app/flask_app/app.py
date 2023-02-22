@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 import wasm_utils.wasm_utils as wu
-from utils.configuration import get_device_description, get_device_platform_info
+from utils.configuration import get_device_description, get_wot_td
 
 MODULE_FOLDER = './modules'
 PARAMS_FOLDER = './params'
@@ -133,15 +133,13 @@ def get_listening_address(app: Flask) -> Tuple[str, int]:
 
     return server_address
 
+@bp.route('/.well-known/wasmiot-device-description')
+def wasmiot_device_description():
+    return jsonify(get_device_description())
 
 @bp.route('/.well-known/wot-thing-description')
 def thingi_description():
-    return jsonify(get_device_description())
-
-@bp.route('/property/meta/platform')
-def thingi_platform_info():
-    """Return information describing this device's computing capabilities"""
-    return jsonify(get_device_platform_info())
+    return jsonify(get_wot_td())
 
 @bp.route('/modules/<module_name>/<function_name>')
 def run_module_function(module_name = None, function_name = None):
