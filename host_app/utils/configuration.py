@@ -18,10 +18,10 @@ def get_device_description():
     NOTE: Fails by design if interface description is missing because no reason
     to continue without it.
     """
-    with (CONFIG_DIR / 'wasm-supervisor-interface.wasmiot-device-description.json').open("r") as f:
-        interfaces = json.load(f)
-        platform = _get_device_platform_info()
-        return { "interfaces": interfaces, "platform": platform }
+    with (CONFIG_DIR / 'wasmiot-device-description.json').open("r") as f:
+        description = json.load(f)
+        description["platform"] = _get_device_platform_info()
+        return description
 
 def get_wot_td():
     raise NotImplementedError
@@ -35,14 +35,19 @@ def _get_device_platform_info():
     #with (CONFIG_DIR / "platform-info.json") as f:
     #    return json.load(f)
 
-    # ~Hardcoded~ values.
+    # TEMPORARY: Make up some data.
     from random import random, randrange
     to_bytes = lambda gb: gb * 1_000_000_000
     return {
         "memory": {
             "bytes": to_bytes(randrange(4, 64, 4)) # Try to emulate different gi_GA_bytes of RAM.
         },
-        "cpuGrading": random()
+        "cpu": {
+            "humanReadableName": ["12th Gen Intel(R) Core(TM) i7-12700H", "AMD EPYC™ Embedded 7551", "Dual-core Arm Cortex-M0+"][randrange(0, 3)],
+            "clockSpeed": {
+                "Hz": random() * 3 * 1000_000_000
+            }
+        }
     }
 
 def _check_open(path, obj):
