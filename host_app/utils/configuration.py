@@ -14,13 +14,19 @@ def get_modules():
 
 def get_device_description():
     """
-    Load description from JSON. NOTE: Fails by design if description is
-    missing because no reason to continue.
+    Load supported interfaces from JSON and combine with platform hardware info.
+    NOTE: Fails by design if interface description is missing because no reason
+    to continue without it.
     """
-    with (CONFIG_DIR / 'device-description.json').open("r") as f:
-        return json.load(f)
+    with (CONFIG_DIR / 'wasm-supervisor-interface.wasmiot-device-description.json').open("r") as f:
+        interfaces = json.load(f)
+        platform = _get_device_platform_info()
+        return { "interfaces": interfaces, "platform": platform }
 
-def get_device_platform_info():
+def get_wot_td():
+    raise NotImplementedError
+
+def _get_device_platform_info():
     """
     TODO: Load device computing-capability -info from JSON or read from device
     example by for using psutil https://github.com/giampaolo/psutil.  NOTE:
