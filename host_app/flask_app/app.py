@@ -205,6 +205,8 @@ def get_deployment():
     if not modules:
         return jsonify({'message': 'No modules listed'})
     fetch_modules(modules)
+    # If the fetching did not fail (that is, crash), return success.
+    return jsonify({'status': 'success'})
 
 @bp.route('/upload_module', methods=['POST'])
 def upload_module():
@@ -234,14 +236,14 @@ def fetch_modules(modules):
     Fetch listed Wasm-modules and save them and their details.
     :modules: list of names of modules to download
     """
-    for module_name in modules:
-        r = requests.get(package_manager_url, {"package": module_name})
+    for module in modules:
+        r = requests.get(module["url"])
         "Request for module by name"
-        module_path = os.path.join(current_app.config[MODULE_DIRECTORY], module_name)
+        module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
         open(module_path, 'wb').write(r.content)
         "Save downloaded module to module directory"
-        wu.modules[module_name] = wu.WasmModule(
-            name=module_name,
+        wu.modules[module["name"]] = wu.WasmModule(
+            name=module["name"],
             path=module_path,
         )
         "Add module details to module config"
