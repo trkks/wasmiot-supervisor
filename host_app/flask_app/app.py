@@ -9,6 +9,7 @@ from werkzeug.serving import is_running_from_reloader
 from werkzeug.utils import secure_filename
 import logging
 
+import requests
 from zeroconf import ServiceInfo, Zeroconf
 import socket
 
@@ -18,8 +19,8 @@ import numpy as np
 import wasm_utils.wasm_utils as wu
 from utils.configuration import get_device_description, get_wot_td
 
-MODULE_FOLDER = './modules'
-PARAMS_FOLDER = './params'
+MODULE_DIRECTORY = '../modules'
+PARAMS_FOLDER = '../params'
 
 bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
@@ -35,7 +36,7 @@ def create_app(*args, **kwargs) -> Flask:
 
     app.config.update({
         'secret_key': 'dev',
-        'MODULE_FOLDER': MODULE_FOLDER,
+        'MODULE_FOLDER': MODULE_DIRECTORY,
         'PARAMS_FOLDER': PARAMS_FOLDER,
     })
 
@@ -193,6 +194,18 @@ def run_grayscale(module_name = None, function_name = None):
     cv2.imwrite("gsimg.png", result)
     return jsonify({'status': 'success'})
 
+@bp.route('/deploy', methods=['POST'])
+def get_deployment():
+    """Parses the deployment from POST-request and enacts it. Request content-type needs to be 'application/json'"""
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'message': 'Non-existent or malformed deployment data'})
+    modules = data['modules']
+    if not modules:
+        return jsonify({'message': 'No modules listed'})
+    fetch_modules(modules)
+    # If the fetching did not fail (that is, crash), return success.
+    return jsonify({'status': 'success'})
 
 @bp.route('/upload_module', methods=['POST'])
 def upload_module():
@@ -216,3 +229,20 @@ def upload_params():
     filename = secure_filename(file.filename)
     file.save(os.path.join(current_app.config['PARAMS_FOLDER'], filename))
     return jsonify({'status': 'success'})
+
+def fetch_modules(modules):
+    """
+    Fetch listed Wasm-modules and save them and their details.
+    :modules: list of names of modules to download
+    """
+    for module in modules:
+        r = requests.get(module["url"])
+        "Request for module by name"
+        module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
+        open(module_path, 'wb').write(r.content)
+        "Save downloaded module to module directory"
+        wu.modules[module["name"]] = wu.WasmModule(
+            name=module["name"],
+            path=module_path,
+        )
+        "Add module details to module config"
