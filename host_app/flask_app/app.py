@@ -21,7 +21,6 @@ from utils.configuration import get_device_description, get_wot_td
 
 MODULE_DIRECTORY = '../modules'
 PARAMS_FOLDER = '../params'
-package_manager_url = "http://localhost:3001"
 
 bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
