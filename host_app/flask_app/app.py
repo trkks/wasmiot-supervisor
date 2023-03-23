@@ -239,6 +239,9 @@ def fetch_modules(modules):
         r = requests.get(module["url"])
         "Request for module by name"
         module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
+        # Confirm that the module directory exists and create it if not TODO:
+        # This would be better performed at startup.
+        os.makedirs(current_app.config["MODULE_FOLDER"], exist_ok=True)
         open(module_path, 'wb').write(r.content)
         "Save downloaded module to module directory"
         wu.modules[module["name"]] = wu.WasmModule(

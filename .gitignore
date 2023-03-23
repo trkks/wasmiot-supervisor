@@ -166,3 +166,4 @@ cython_debug/
 
 # Supervisor's files generated at runtime/devcontainer.
 configs/
+modules/

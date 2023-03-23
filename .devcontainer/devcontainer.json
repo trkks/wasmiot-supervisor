@@ -15,6 +15,9 @@
 		}
 	},
 
+	// Put the devcontainer into network shared by orchestrator's devcontainer.
+	"runArgs": ["--network=wasmiot-net"],
+
 	// Configure tool-specific properties.
 	"customizations": {
 		// Configure properties specific to VS Code.
