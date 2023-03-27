@@ -244,7 +244,7 @@ def fetch_modules(modules):
         os.makedirs(current_app.config["MODULE_FOLDER"], exist_ok=True)
         open(module_path, 'wb').write(r.content)
         "Save downloaded module to module directory"
-        wu.modules[module["name"]] = wu.WasmModule(
+        wu.wasm_modules[module["name"]] = wu.WasmModule(
             name=module["name"],
             path=module_path,
         )
