@@ -18,17 +18,14 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 # Copy the rest.
 COPY . .
 
-# README: The device needs its config-files at RUNTIME.
-WORKDIR /app/configs
-ARG DEVICE_TYPE
-# NOTE: Fails if DEVICE_TYPE -ARG not used. From
-# https://stackoverflow.com/questions/38438933/how-to-make-a-build-arg-mandatory-during-docker-build
-RUN test -n $DEVICE_TYPE
+FROM base AS run
 
 ARG DEVICE_NAME
-ENV FLASK_APP ${DEVICE_NAME}
+# NOTE: Uncomment this in order to fail if the ARG is not used. From
+# https://stackoverflow.com/questions/38438933/how-to-make-a-build-arg-mandatory-during-docker-build
+#RUN test -n "$DEVICE_NAME"
 
-FROM base AS run
+ENV FLASK_APP ${DEVICE_NAME}
 
 # Move to correct directory for running the app (handles module paths imports).
 WORKDIR /app/host_app

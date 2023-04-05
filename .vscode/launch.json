@@ -1,0 +1,25 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Supervisor flask app",
+            "type": "python",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "module": "flask",
+            "args": [
+                "--app",
+                "${workspaceFolder}/host_app/flask_app/app.py:create_app",
+                "--debug",
+                "run",
+            ],
+            "env": {
+                "FLASK_APP": "debug-thingi",
+            },
+            "justMyCode": true
+        }
+    ]
+}
