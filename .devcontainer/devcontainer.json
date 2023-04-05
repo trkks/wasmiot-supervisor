@@ -17,7 +17,13 @@
 	"forwardPorts": [ 5000 ],
 	// Put the devcontainer into network shared by orchestrator's devcontainer.
 	"runArgs": ["--network=wasmiot-net"],
-
+	"containerEnv": {
+		// This is because the app is configured to be run from under the
+		// directory host_app/ but VSCode and Python extensions don't know this(?)
+		// and would disagree with import-paths otherwise. See:
+		// https://stackoverflow.com/questions/50089498/how-to-set-the-root-directory-for-visual-studio-code-python-extension
+		"PYTHONPATH": "host_app"
+	},
 	// Configure tool-specific properties.
 	"customizations": {
 		// Configure properties specific to VS Code.
