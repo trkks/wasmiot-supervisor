@@ -9,6 +9,7 @@
             "type": "python",
             "request": "launch",
             "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/host_app",
             "module": "flask",
             "args": [
                 "--app",
