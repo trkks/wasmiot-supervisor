@@ -46,3 +46,10 @@ issuing GET-request to the url
 which in the docker test environment case
 is 'localhost:\<port\>/modules/Fibo/fibo?param1=\<integer number\>'.
 You can just do this by accessing the URL with your browser and you should get json containing the resulting number as a response.
+
+## Devcontainer
+Use VSCode for starting in container. NOTE: Be sure the network it uses is
+created i.e., before starting the container run:
+```
+docker network create wasmiot-net
+```
