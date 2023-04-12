@@ -16,6 +16,9 @@
                 "${workspaceFolder}/host_app/flask_app/app.py:create_app",
                 "--debug",
                 "run",
+                // This allows a simultaneously running orchestrator to make
+                // requests based on IP-address advertised by supervisor-mDns.
+                "--host=0.0.0.0"
             ],
             "env": {
                 "FLASK_APP": "debug-thingi",
