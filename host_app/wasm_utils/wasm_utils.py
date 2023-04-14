@@ -1,4 +1,4 @@
-import wasm3
+import os
 import threading
 
 from utils.configuration import remote_functions, modules
@@ -8,13 +8,14 @@ from .wasm3_api import rt, env
 class WasmModule:
     """Class for describing WebAssembly modules"""
 
-    def __init__(self, name="", path="", size=0, paramPath="", data_ptr=""):
+    def __init__(self, name="", path="", size=0, paramPath="", data_ptr="", model_path=""):
         self.name = name
         self.path = path
         self.size = size
         self.paramPath = paramPath
         self.data_ptr = data_ptr
         self.task_handle = None
+        self.model_path = model_path
 
 # wasm3 maps wasm function argument types as follows:
 # i32 : 1
@@ -35,7 +36,9 @@ for name, details in modules.items():
                                     path=details["path"],
                                     size=details["size"],
                                     paramPath=details["paramPath"],
-                                    data_ptr=details["data_ptr"] if "data_ptr" in details else "")
+                                    data_ptr=details["data_ptr"] if "data_ptr" in details else "",
+                                    model_path=details["model_path"] if "model_path" in details else ""
+                                    )
 #wasm_modules = {
 #    #"app1": WasmModule(
 #    #    "app1.wasm", 
@@ -88,6 +91,26 @@ def run_data_function(fname, data_ptr, data):
     mem[ptr:ptr+len(data)] = data
     func()
     return mem[ptr:ptr+len(data)]
+
+def run_ml_model(mod_name, image_fh):
+    alloc = rt.find_function("alloc")
+
+    model = open(wasm_modules[mod_name].model_path, 'rb')
+    model_size = os.path.getsize(wasm_modules[mod_name].model_path)
+    model_ptr = alloc(model_size)
+
+    image = image_fh.read()
+    image_size = len(image)
+    image_ptr = alloc(image_size)
+
+    mem = rt.get_memory(0)
+    mem[model_ptr:model_ptr+model_size] = model.read()
+    mem[image_ptr:image_ptr+image_size] = image
+
+    infer = rt.find_function("infer_from_ptrs")
+    res = infer(model_ptr, model_size, image_ptr, image_size)
+    print("Inference result:", res)
+    return res
 
 def get_arg_types(fname):
     func = rt.find_function(fname)
