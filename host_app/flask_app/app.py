@@ -155,6 +155,49 @@ def run_module_function(module_name = None, function_name = None):
     res = wu.run_function(function_name, params)
     return jsonify({'result': res})
 
+
+@bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
+def run_module_function_raw_input(module_name, function_name):
+    """
+    Run a Wasm function from a module operating on Wasm-runtime's memory.
+    
+    The function's input arguments and output is passed and read by indexing
+    into Wasm-runtime memory much like described in
+    https://radu-matei.com/blog/practical-guide-to-wasm-memory/.
+
+    The input is expected to be a byte-sequence found in `request.data`.
+    """
+    # Setup variables needed for initialization and running modules.
+    module = wu.wasm_modules.get(module_name, None)
+    if not module or not function_name:
+        return jsonify({'result': 'not found'})
+
+    input_data = request.data
+    input_len = len(input_data)
+
+    # Allocate pointer to a suitable block of memory in Wasm and write the
+    # input there.
+    wu.load_module(module)
+    ptr = wu.run_function("alloc", [input_len])
+    memory = wu.rt.get_memory(0)
+    memory[ptr:ptr + input_len] = input_data
+
+    # Run the application func now that input is written to its place.
+    # The function naturally needs to be implemented to:
+    # 1. receive the input pointer and length as arguments
+    # 2. return the result pointer and length as output TODO This latter might
+    # be iffy with some source-languages (can e.g. C be compiled to Wasm
+    # returning tuples?)
+    res_ptr, res_len = wu.run_function(function_name, [ptr, input_len])
+
+    # Read result from memory and pass forward TODO: Follow the deployment
+    # sequence and instructions.
+    res = memory[res_ptr:res_ptr + res_len]
+
+    # FIXME: Interpreting random byte sequence to string.
+    return jsonify({'result': str(res)})
+
+
 @bp.route('/ml/<module_name>', methods=['POST'])
 def run_ml_module(module_name = None):
     """Data for module comes as file 'data' in file attribute"""
