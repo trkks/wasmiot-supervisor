@@ -159,13 +159,13 @@ def run_module_function(module_name = None, function_name = None):
 def run_ml_module(module_name = None):
     """Data for module comes as file 'data' in file attribute"""
     if not module_name:
-        return jsonify({'result': 'module not found'})
+        return jsonify({'status': 'error', 'result': 'module not found'})
 
     wu.load_module(wu.wasm_modules[module_name])
 
     file = request.files['data']
     if not file:
-        return jsonify({'result': "file 'data' not in request"})
+        return jsonify({'status': 'error', 'result': "file 'data' not in request"})
 
     res = wu.run_ml_model(module_name, file) 
     return jsonify({'status': 'success', 'result': res})
@@ -174,11 +174,11 @@ def run_ml_module(module_name = None):
 def upload_ml_model(module_name = None):
     """Model comes as 'model' file in request file attribute"""
     if not module_name:
-        return jsonify({'result': 'module not found'})
+        return jsonify({'status': 'error', 'result': 'module not found'})
 
     file = request.files['model']
     if not file:
-        return jsonify({'result': "file 'model' not in request"})
+        return jsonify({'status': 'error', 'result': "file 'model' not in request"})
     
     path = wu.wasm_modules[module_name].model_path
     if not path:
