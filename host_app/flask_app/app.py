@@ -19,6 +19,7 @@ import numpy as np
 
 import wasm_utils.wasm_utils as wu
 from utils.configuration import get_device_description, get_wot_td
+from utils.routes import endpoint_failed
 
 MODULE_DIRECTORY = '../modules'
 PARAMS_FOLDER = '../params'
@@ -170,7 +171,7 @@ def run_module_function_raw_input(module_name, function_name):
     # Setup variables needed for initialization and running modules.
     module = wu.wasm_modules.get(module_name, None)
     if not module or not function_name:
-        return jsonify({'result': 'not found'})
+        return endpoint_failed(request, "not found")
 
     input_data = request.data
     input_len = len(input_data)
@@ -178,7 +179,12 @@ def run_module_function_raw_input(module_name, function_name):
     # Allocate pointer to a suitable block of memory in Wasm and write the
     # input there.
     wu.load_module(module)
-    ptr = wu.run_function("alloc", [input_len])
+
+    try:
+        ptr = wu.run_function("alloc", [input_len])
+    except Exception as err:
+        return endpoint_failed(request, f"Input buffer allocation failed: {err}")
+
     memory = wu.rt.get_memory(0)
     memory[ptr:ptr + input_len] = input_data
 
@@ -188,7 +194,10 @@ def run_module_function_raw_input(module_name, function_name):
     # 2. return the result pointer and length as output TODO This latter might
     # be iffy with some source-languages (can e.g. C be compiled to Wasm
     # returning tuples?)
-    res_ptr, res_len = wu.run_function(function_name, [ptr, input_len])
+    try:
+        res_ptr, res_len = wu.run_function(function_name, [ptr, input_len])
+    except Exception as err:
+        return endpoint_failed(request, f"Execution failed: {err}")
 
     # Read result from memory and pass forward TODO: Follow the deployment
     # sequence and instructions.
