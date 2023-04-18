@@ -47,6 +47,22 @@ which in the docker test environment case
 is 'localhost:\<port\>/modules/Fibo/fibo?param1=\<integer number\>'.
 You can just do this by accessing the URL with your browser and you should get json containing the resulting number as a response.
 
+## Testing ML deployment
+
+You first need to deploy a wasm-module to the device from the orchestrator. As a test module you can use the example from [here](https://github.com/radu-matei/wasi-tensorflow-inference).
+That repository contains the code for the wasm-module (source in crates/wasi-mobilenet-inference pre-compiled binary in model/optimized-wasi.wasm) and the model file
+(in model/mobilenet_v2_1.4_224_frozen.pb).
+
+After deploying the module to the device, you need to supply the model file, which currently can't be done via orchestrator. Instead you can use curl, eg.:
+```
+curl -v -X POST -F model=@./model/mobilenet_v2_1.4_224_frozen.pb http://localhost:5000/ml/model/mobilenet
+```
+After which you can test the inference via curl, eg.:
+```
+curl -v -X POST -F data=@./testdata/husky.jpeg http://localhost:5000/ml/mobilenet
+```
+You can find a couple of test images in the wasi-inference repository in 'testdata'
+
 ## Devcontainer
 Use VSCode for starting in container. NOTE: Be sure the network it uses is
 created i.e., before starting the container run:
