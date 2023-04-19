@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import atexit
 import re
 from typing import Tuple
@@ -153,6 +154,39 @@ def run_module_function(module_name = None, function_name = None):
     params = [request.args.get('param' + str(i+1), type=t) for i, t in enumerate(types)]  # get parameters from get request (named param1, param2, etc.) with given types
     res = wu.run_function(function_name, params)
     return jsonify({'result': res})
+
+@bp.route('/ml/<module_name>', methods=['POST'])
+def run_ml_module(module_name = None):
+    """Data for module comes as file 'data' in file attribute"""
+    if not module_name:
+        return jsonify({'status': 'error', 'result': 'module not found'})
+
+    wu.load_module(wu.wasm_modules[module_name])
+
+    file = request.files['data']
+    if not file:
+        return jsonify({'status': 'error', 'result': "file 'data' not in request"})
+
+    res = wu.run_ml_model(module_name, file) 
+    return jsonify({'status': 'success', 'result': res})
+
+@bp.route('/ml/model/<module_name>', methods=['POST'])
+def upload_ml_model(module_name = None):
+    """Model comes as 'model' file in request file attribute"""
+    if not module_name:
+        return jsonify({'status': 'error', 'result': 'module not found'})
+
+    file = request.files['model']
+    if not file:
+        return jsonify({'status': 'error', 'result': "file 'model' not in request"})
+    
+    path = wu.wasm_modules[module_name].model_path
+    if not path:
+        path = Path(current_app.config['PARAMS_FOLDER']) / module_name / 'model'
+        wu.wasm_modules[module_name].model_path = path
+    path.parent.mkdir(exist_ok=True, parents=True)
+    file.save(path)
+    return jsonify({'status': 'success'})
 
 @bp.route('/img/<module_name>/<function_name>', methods=['POST'])
 def run_img_function(module_name = None, function_name = None):

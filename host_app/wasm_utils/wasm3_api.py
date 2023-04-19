@@ -1,5 +1,6 @@
-import wasm3
+import os
 from time import sleep,time
+import wasm3
 import requests
 import cv2
 import numpy as np
@@ -7,7 +8,7 @@ import numpy as np
 from utils.configuration import remote_functions, modules
 
 env = wasm3.Environment()
-rt = env.new_runtime(4096)
+rt = env.new_runtime(15000)
 
 #remote_functions = {
 #    'convert2Grayscale': {
@@ -76,6 +77,16 @@ def m3_python_getHumidity():
         return humidity
     except Exception as error:
         print(error.args[0])
+    
+class WasiErrno:
+    SUCCESS = 0
+    BADF = 8
+    INVAL = 28
+
+def random_get(buf_ptr, size):
+    mem = rt.get_memory(0)
+    mem[buf_ptr: buf_ptr+size] = os.urandom(size)
+    return WasiErrno.SUCCESS
 
 def link_functions(mod):
     sys = "sys"
@@ -83,6 +94,7 @@ def link_functions(mod):
     communication = "communication"
     dht = "dht"
     camera = "camera"
+    wasi = "wasi_snapshot_preview1"
 
     # system functions
     mod.link_function(sys, "millis", "i()", m3_python_clock_ms)
@@ -98,3 +110,6 @@ def link_functions(mod):
     mod.link_function(camera, "takeImage", "v(i)", m3_python_takeImage)
     mod.link_function(dht, "getTemperature", "f()", m3_python_getTemperature)
     mod.link_function(dht, "getHumidity", "f()", m3_python_getHumidity)
+
+    # WASI functions
+    mod.link_function(wasi, random_get.__name__, random_get)
