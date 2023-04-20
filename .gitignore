@@ -167,3 +167,8 @@ cython_debug/
 # Supervisor's files generated at runtime/devcontainer.
 configs/
 modules/
+
+# For not including test outputs from experiment scripts.
+*.txt
+
+*.wasm
