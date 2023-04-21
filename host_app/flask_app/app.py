@@ -336,7 +336,14 @@ def get_deployment():
     modules = data['modules']
     if not modules:
         return jsonify({'message': 'No modules listed'})
-    fetch_modules(modules)
+
+    try:
+        fetch_modules(modules)
+    except Exception as err:
+        msg = f"Fetching modules failed: {err}"
+        print(msg)
+        return endpoint_failed(request, msg)
+
     # If the fetching did not fail (that is, crash), return success.
     return jsonify({'status': 'success'})
 
@@ -370,6 +377,13 @@ def fetch_modules(modules):
     """
     for module in modules:
         r = requests.get(module["url"])
+
+        # Check that request succeeded before continuing on.
+        # TODO: Could maybe request alternative sources from orchestrator for
+        # getting this module?
+        if not r.ok:
+            raise Exception(f'Fetching module \'{module["name"]}\' from \'{module["url"]}\' failed: {r.content}')
+
         "Request for module by name"
         module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
         # Confirm that the module directory exists and create it if not TODO:
