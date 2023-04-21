@@ -14,7 +14,6 @@
 			"NODE_VERSION": "lts/*"
 		}
 	},
-	"forwardPorts": [ 5000 ],
 	// Put the devcontainer into network shared by orchestrator's devcontainer.
 	"runArgs": ["--network=wasmiot-net"],
 	"containerEnv": {

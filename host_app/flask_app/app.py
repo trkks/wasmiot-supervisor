@@ -19,9 +19,18 @@ import numpy as np
 
 import wasm_utils.wasm_utils as wu
 from utils.configuration import get_device_description, get_wot_td
+from utils.routes import endpoint_failed
 
 MODULE_DIRECTORY = '../modules'
 PARAMS_FOLDER = '../params'
+
+PTR_BYTES = 32 // 8
+"Size in bytes of the pointer used to index Wasm memory."
+LENGTH_BYTES = 32 // 8
+"""
+Size in bytes of the length-type used to represent a Wasm memory block size e.g.
+a block of 257 bytes can be enumerated with 2 bytes but not with 1 byte.
+"""
 
 bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
@@ -154,6 +163,96 @@ def run_module_function(module_name = None, function_name = None):
     params = [request.args.get('param' + str(i+1), type=t) for i, t in enumerate(types)]  # get parameters from get request (named param1, param2, etc.) with given types
     res = wu.run_function(function_name, params)
     return jsonify({'result': res})
+
+
+@bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
+def run_module_function_raw_input(module_name, function_name):
+    """
+    Run a Wasm function from a module operating on Wasm-runtime's memory.
+    
+    The function's input arguments and output is passed and read by indexing
+    into Wasm-runtime memory much like described in
+    https://radu-matei.com/blog/practical-guide-to-wasm-memory/.
+
+    The input is expected to be a byte-sequence found in `request.data`.
+    """
+    # FIXME: This route seems non-functional in my experiments and needs more
+    # work if raw bytes input/output is required in the future. So until it
+    # gets functional, exit immediately.
+    return endpoint_failed(request, "Byte input route not supported")
+
+    # Setup variables needed for initialization and running modules.
+    module = wu.wasm_modules.get(module_name, None)
+    if not module or not function_name:
+        return endpoint_failed(request, "not found")
+
+    input_data = request.data
+    input_len = len(input_data)
+
+    # Allocate pointer to a suitable block of memory in Wasm and write the
+    # input there.
+    wu.load_module(module)
+
+    try:
+        ptr = wu.run_function("alloc", [input_len])
+    except Exception as err:
+        return endpoint_failed(request, f"Input buffer allocation failed: {err}")
+
+    memory = wu.rt.get_memory(0)
+    memory[ptr:ptr + input_len] = input_data
+
+    # Run the application func now that input is written to its place.
+    # The function naturally needs to be implemented to:
+    # 1. receive the input pointer and length as arguments
+    # 2. return the result pointer and length as output TODO This latter might
+    # be iffy with some source-languages (can e.g. C be compiled to Wasm
+    # returning tuples?)
+    try:
+        # NOTE: For functions, that return tuples like f() -> (ptr, len),
+        # Wasm-compilers apparently write the result into the last parameter
+        # (i.e. a memory address) for runtime-compatibility -reasons. See:
+        # https://stackoverflow.com/questions/70641080/wasm-from-rust-not-returning-the-expected-types
+        import struct
+        # Allocate space for the tuple return value (which then points to
+        # _application_ return value).
+        try:
+            ret_ptr = wu.run_function("alloc", [PTR_BYTES + LENGTH_BYTES])
+        except Exception as err:
+            return endpoint_failed(request, f"Output buffer allocation failed: {err}")
+
+        wu.run_function(function_name, [ptr, input_len, ret_ptr])
+        # The pointer to _application_ result should be found in memory with
+        # address first and length second.
+        ret_slice = memory[ret_ptr:ret_ptr + PTR_BYTES + LENGTH_BYTES]
+
+        # Here's the docstring of tobytes from the python interpreter:
+        # >>> ret_slice.tobytes.__doc__
+        # "Return the data in the buffer as a byte string.\n\nOrder can be {'C',
+        # 'F', 'A'}. When order is 'C' or 'F', the data of the\noriginal array
+        # is converted to C or Fortran order. For contiguous views,\n'A' returns
+        # an exact copy of the physical memory. In particular,
+        # in-memory\nFortran order is preserved. For non-contiguous views, the
+        # data is converted\nto C first. order=None is the same as order='C'."
+        ret_bytes = ret_slice.tobytes(order="A")
+        # Get the two (2) unsigned ints (4-byte) (NOTE Hardcoded although sizes
+        # of the types are in the constants as used above) as little-endian like
+        # the Wasm memory should be according to:
+        # https://webassembly.org/docs/portability/
+        res_ptr, res_len = struct.unpack("<II", ret_bytes)
+    except Exception as err:
+        import traceback
+        traceback.print_exc()
+        return endpoint_failed(request, f"Execution failed: {err}")
+
+    print("Result address and length:", res_ptr, res_len)
+
+    # Read result from memory and pass forward TODO: Follow the deployment
+    # sequence and instructions.
+    res = memory[res_ptr:res_ptr + res_len]
+
+    # FIXME: Interpreting random byte sequence to string.
+    return jsonify({'result': str(res)})
+
 
 @bp.route('/ml/<module_name>', methods=['POST'])
 def run_ml_module(module_name = None):
