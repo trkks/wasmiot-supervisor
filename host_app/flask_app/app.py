@@ -16,7 +16,7 @@ import socket
 
 import cv2
 import numpy as np
-
+import sentry_sdk
 import wasm_utils.wasm_utils as wu
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
@@ -35,6 +35,18 @@ a block of 257 bytes can be enumerated with 2 bytes but not with 1 byte.
 bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
 logger = logging.getLogger(os.environ["FLASK_APP"])
+
+from flask import Flask
+
+# add sentry logging
+sentry_sdk.init(
+    dsn="https://21496afe1603434d8268411d5dc77611@o4505187176611840.ingest.sentry.io/4505187655811072",
+    integrations=[
+        FlaskIntegration(),
+    ],
+    # Set traces_sample_rate to 1.0 to capture 100%
+    traces_sample_rate=1.0
+)
 
 def create_app(*args, **kwargs) -> Flask:
     """
