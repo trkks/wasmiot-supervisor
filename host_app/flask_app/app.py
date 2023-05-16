@@ -9,6 +9,8 @@ from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
 from werkzeug.utils import secure_filename
 import logging
+import struct
+import string
 
 import requests
 from zeroconf import ServiceInfo, Zeroconf
@@ -24,12 +26,20 @@ from utils.routes import endpoint_failed
 MODULE_DIRECTORY = '../modules'
 PARAMS_FOLDER = '../params'
 
-PTR_BYTES = 32 // 8
-"Size in bytes of the pointer used to index Wasm memory."
-LENGTH_BYTES = 32 // 8
+OUTPUT_LENGTH_BYTES = 32 // 8
 """
-Size in bytes of the length-type used to represent a Wasm memory block size e.g.
-a block of 257 bytes can be enumerated with 2 bytes but not with 1 byte.
+Size in bytes of the length-type used to represent the size of the block of Wasm
+memory containing output result of an executed WebAssembly function. e.g.
+a block of 257 bytes can be enumerated with a 2 byte type such as a 16bit
+integer but not with 1 byte.
+"""
+
+ALLOC_NAME = "alloc"
+"""
+Name used for the memory-allocation function that should be found in most every
+WebAssembly module up for execution. Should have one parameter, which is the
+length in bytes of the memory to allocate and returns beginning address of the
+allocated block.
 """
 
 bp = Blueprint('thingi', os.environ["FLASK_APP"])
@@ -176,10 +186,6 @@ def run_module_function_raw_input(module_name, function_name):
 
     The input is expected to be a byte-sequence found in `request.data`.
     """
-    # FIXME: This route seems non-functional in my experiments and needs more
-    # work if raw bytes input/output is required in the future. So until it
-    # gets functional, exit immediately.
-    return endpoint_failed(request, "Byte input route not supported")
 
     # Setup variables needed for initialization and running modules.
     module = wu.wasm_modules.get(module_name, None)
@@ -187,71 +193,96 @@ def run_module_function_raw_input(module_name, function_name):
         return endpoint_failed(request, "not found")
 
     input_data = request.data
-    input_len = len(input_data)
+
+    wu.load_module(module)
 
     # Allocate pointer to a suitable block of memory in Wasm and write the
     # input there.
-    wu.load_module(module)
+    try:
+        input_ptr = wu.run_function("alloc", [len(input_data)])
+    except Exception as err:
+        return endpoint_failed(
+            request,
+            f"Failed running WebAssembly '{ALLOC_NAME}' for reserving {len(input_data)} bytes: {err}"
+        )
+
+    # Copy the input data into the allocated memory block.
+    write_err = wu.write_to_memory(input_ptr, input_data)
+    if write_err is not None:
+        return endpoint_failed(request, write_err)
+
+    # Reserve memory for WebAssembly to write the length of the generated
+    # output, so it can be read later and used in reading the _actual_ result.
+    try:
+        output_len_ptr = wu.run_function("alloc", [OUTPUT_LENGTH_BYTES])
+    except Exception as err:
+        return endpoint_failed(
+            request,
+            f"Failed running WebAssembly '{ALLOC_NAME}' for reserving {OUTPUT_LENGTH_BYTES} bytes: {err}"
+        )
 
     try:
-        ptr = wu.run_function("alloc", [input_len])
+        # NOTE: The parameters of the WebAssembly function being run is
+        # constrained here. Expecting it to be:
+        # Three (3) parameters:
+        #   1) input buffer address
+        #   2) length of input buffer
+        #   3) address for writing output buffer's length
+        # One output:
+        #   - output buffer address
+        input_params = [input_ptr, len(input_data), output_len_ptr]
+
+        print(
+            f"Running WebAssembly function '{function_name}' with params: ({', '.join((str(i) for i in input_params))})"
+        )
+
+        output_ptr = wu.run_function(function_name, input_params)
     except Exception as err:
-        return endpoint_failed(request, f"Input buffer allocation failed: {err}")
+        return endpoint_failed(
+            request,
+            f"Failed running WebAssembly '{function_name}' with inputs ({', '.join((str(i) for i in input_params))}): {err}"
+        )
 
-    memory = wu.rt.get_memory(0)
-    memory[ptr:ptr + input_len] = input_data
+    # Get the one unsigned int (4-byte) as little-endian like the Wasm memory
+    # should be according to:
+    # https://webassembly.org/docs/portability/
+    output_len_data, read_err = wu.read_from_memory(output_len_ptr, OUTPUT_LENGTH_BYTES)
+    if read_err is not None:
+        return endpoint_failed(request, read_err)
 
-    # Run the application func now that input is written to its place.
-    # The function naturally needs to be implemented to:
-    # 1. receive the input pointer and length as arguments
-    # 2. return the result pointer and length as output TODO This latter might
-    # be iffy with some source-languages (can e.g. C be compiled to Wasm
-    # returning tuples?)
     try:
-        # NOTE: For functions, that return tuples like f() -> (ptr, len),
-        # Wasm-compilers apparently write the result into the last parameter
-        # (i.e. a memory address) for runtime-compatibility -reasons. See:
-        # https://stackoverflow.com/questions/70641080/wasm-from-rust-not-returning-the-expected-types
-        import struct
-        # Allocate space for the tuple return value (which then points to
-        # _application_ return value).
-        try:
-            ret_ptr = wu.run_function("alloc", [PTR_BYTES + LENGTH_BYTES])
-        except Exception as err:
-            return endpoint_failed(request, f"Output buffer allocation failed: {err}")
+        # TODO Remove the hardcode somehow; size of the type is in the constant
+        # OUTPUT_LENGTH_BYTES...Or could just agree on using 32 bits (unsigned int)
+        # always.
+        output_len = struct.unpack("<I", output_len_data)[0]
+    except struct.error as err:
+        return endpoint_failed(
+            request,
+            f"Interpreting WebAssembly output length failed: {err}"
+        )
 
-        wu.run_function(function_name, [ptr, input_len, ret_ptr])
-        # The pointer to _application_ result should be found in memory with
-        # address first and length second.
-        ret_slice = memory[ret_ptr:ret_ptr + PTR_BYTES + LENGTH_BYTES]
-
-        # Here's the docstring of tobytes from the python interpreter:
-        # >>> ret_slice.tobytes.__doc__
-        # "Return the data in the buffer as a byte string.\n\nOrder can be {'C',
-        # 'F', 'A'}. When order is 'C' or 'F', the data of the\noriginal array
-        # is converted to C or Fortran order. For contiguous views,\n'A' returns
-        # an exact copy of the physical memory. In particular,
-        # in-memory\nFortran order is preserved. For non-contiguous views, the
-        # data is converted\nto C first. order=None is the same as order='C'."
-        ret_bytes = ret_slice.tobytes(order="A")
-        # Get the two (2) unsigned ints (4-byte) (NOTE Hardcoded although sizes
-        # of the types are in the constants as used above) as little-endian like
-        # the Wasm memory should be according to:
-        # https://webassembly.org/docs/portability/
-        res_ptr, res_len = struct.unpack("<II", ret_bytes)
-    except Exception as err:
-        import traceback
-        traceback.print_exc()
-        return endpoint_failed(request, f"Execution failed: {err}")
-
-    print("Result address and length:", res_ptr, res_len)
+    print(f"Output result length is {output_len} bytes")
 
     # Read result from memory and pass forward TODO: Follow the deployment
     # sequence and instructions.
-    res = memory[res_ptr:res_ptr + res_len]
+    output_data, read_err = wu.read_from_memory(output_ptr, output_len)
+    if read_err is not None:
+        return endpoint_failed(request, read_err)
 
-    # FIXME: Interpreting random byte sequence to string.
-    return jsonify({'result': str(res)})
+    try:
+        # FIXME: Interpreting random byte sequence to string.
+        result = output_data.decode("utf-8")
+        if any(map(lambda c: c not in string.printable, result)):
+            result = str(output_data)
+    except struct.error as err:
+        return endpoint_failed(
+            request,
+            f"Interpreting WebAssembly output result failed: {err}"
+        )
+
+    print(f"Result interpreted to string is '{result}'")
+
+    return jsonify({ 'result': result })
 
 
 @bp.route('/ml/<module_name>', methods=['POST'])

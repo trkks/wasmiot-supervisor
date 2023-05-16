@@ -167,6 +167,7 @@ cython_debug/
 # Supervisor's files generated at runtime/devcontainer.
 configs/
 modules/
+params/
 
 # For not including test outputs from experiment scripts.
 *.txt
