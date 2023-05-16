@@ -170,7 +170,7 @@ def run_module_function(module_name = None, function_name = None):
     #params = request.args.getlist('param')
     wu.load_module(wu.wasm_modules[module_name])
     types = wu.get_arg_types(function_name)  # get argument types
-    params = [request.args.get('param' + str(i+1), type=t) for i, t in enumerate(types)]  # get parameters from get request (named param1, param2, etc.) with given types
+    params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
     res = wu.run_function(function_name, params)
     return jsonify({'result': res})
 
