@@ -46,6 +46,12 @@ bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
 logger = logging.getLogger(os.environ["FLASK_APP"])
 
+deployments = {}
+"""
+Mapping of deployment-IDs to instructions for forwarding function results to
+other devices and calling their functions
+"""
+
 def create_app(*args, **kwargs) -> Flask:
     """
     Create a new Flask application.
@@ -162,8 +168,8 @@ def wasmiot_device_description():
 def thingi_description():
     return jsonify(get_wot_td())
 
-@bp.route('/modules/<module_name>/<function_name>')
-def run_module_function(module_name = None, function_name = None):
+@bp.route('/<deployment_id>/modules/<module_name>/<function_name>')
+def run_module_function(deployment_id = "adhoc", module_name = None, function_name = None):
     if not module_name or not function_name:
         return jsonify({'result': 'not found'})
     #param = request.args.get('param', default=1, type=int)
@@ -171,7 +177,23 @@ def run_module_function(module_name = None, function_name = None):
     wu.load_module(wu.wasm_modules[module_name])
     types = wu.get_arg_types(function_name)  # get argument types
     params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
-    res = wu.run_function(function_name, params)
+    self_res = wu.run_function(function_name, params)
+
+    # Return immediately if this request was purposefully made not in relation
+    # to an existing deployment.
+    if deployment_id == 'adhoc':
+        return jsonify({ 'result': self_res })
+
+    # Error if deployment-ID (TODO Or other access-control) does not check out.
+    if deployment_id not in deployments:
+        return endpoint_failed(request, "deployment does not exist", 404)
+
+    next_node = deployments[deployment_id]
+
+    # Call next func in sequence. FIXME: Assumes GET and this way unnecessarily
+    # blocks execution although Flask probably helps in part (handle latter by
+    # making an event-loop?).
+    res = requests.get()
     return jsonify({'result': res})
 
 
@@ -365,6 +387,8 @@ def get_deployment():
     if not data:
         return jsonify({'message': 'Non-existent or malformed deployment data'})
     modules = data['modules']
+    deployments[data["deploymentId"]] = data["instructions"]
+
     if not modules:
         return jsonify({'message': 'No modules listed'})
 
