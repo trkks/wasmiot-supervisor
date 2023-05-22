@@ -134,3 +134,34 @@ def start_modules():
         #else:
         #    print("Error")
  
+def write_to_memory(address, bytes_data):
+    """
+    Put bytes_data to WebAssembly runtime's memory starting from address.
+
+    :return None if successfully written or otherwise a string describing the
+    error.
+    """
+    try:
+        wasm_memory = rt.get_memory(0)
+        wasm_memory[address:address + len(bytes_data)] = bytes_data
+        return None
+    except Exception as err:
+        return f"Could not insert input data (length {len(bytes_data)}) into to WebAssembly memory at address ({address}): {err}"
+
+def read_from_memory(address, length_bytes):
+    """
+    Read length_bytes amount of bytes from WebAssembly runtime's memory starting
+    from address
+
+    :return Tuple where the first item is the bytes inside in the requested
+    block of WebAssembly runtime's memory and the second item is None if the
+    read was successful and an error if not. 
+    """
+    try:
+        wasm_memory = rt.get_memory(0)
+        return wasm_memory[address:address + length_bytes].tobytes(), None
+    except Exception as err:
+        return (
+            [],
+            f"Reading WebAssembly memory from address {address} with length {length_bytes} failed: {err}"
+        )

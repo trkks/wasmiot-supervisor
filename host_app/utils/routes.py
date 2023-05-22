@@ -16,6 +16,6 @@ def endpoint_failed(request, msg="", status_code=500):
     # Log the message TODO Use an actual logger.
     print(f"{request.method} on '{request.path}': {msg}")
 
-    resp = jsonify({ "status": msg })
+    resp = jsonify({ "status": "error", "result": msg })
     resp.status_code = status_code
     return resp
