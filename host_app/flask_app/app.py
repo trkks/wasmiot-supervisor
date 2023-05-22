@@ -18,7 +18,8 @@ import socket
 
 import cv2
 import numpy as np
-
+import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
 import wasm_utils.wasm_utils as wu
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
@@ -46,11 +47,14 @@ bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
 logger = logging.getLogger(os.environ["FLASK_APP"])
 
+from flask import Flask
+
 deployments = {}
 """
 Mapping of deployment-IDs to instructions for forwarding function results to
 other devices and calling their functions
 """
+
 
 def create_app(*args, **kwargs) -> Flask:
     """
@@ -68,6 +72,24 @@ def create_app(*args, **kwargs) -> Flask:
 
     # Load config from instance/ -directory
     app.config.from_pyfile("config.py", silent=True)
+
+    # add sentry logging
+    app.config.setdefault('SENTRY_DSN', os.environ.get('SENTRY_DSN'))
+
+    sentry_dsn = app.config.get("SENTRY_DSN")
+
+    if sentry_dsn:
+        sentry_sdk.init(
+            dsn=sentry_dsn,
+            integrations=[
+                FlaskIntegration(),
+            ],
+            # Set traces_sample_rate to 1.0 to capture 100%
+            traces_sample_rate=1.0
+        )
+        print("Sentry logging is set up!")
+    else:
+        print("Sentry not configured")
 
     app.register_blueprint(bp)
 
