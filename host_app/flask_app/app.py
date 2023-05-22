@@ -17,6 +17,7 @@ import socket
 import cv2
 import numpy as np
 import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
 import wasm_utils.wasm_utils as wu
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
