@@ -169,32 +169,68 @@ def thingi_description():
     return jsonify(get_wot_td())
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>')
-def run_module_function(deployment_id = "adhoc", module_name = None, function_name = None):
+def run_module_function(deployment_id, module_name = None, function_name = None):
     if not module_name or not function_name:
         return jsonify({'result': 'not found'})
+
+    # Error if deployment-ID (TODO Or other access-control) does not check out.
+    if deployment_id != 'adhoc' and deployment_id not in deployments:
+        return endpoint_failed(request, 'deployment does not exist', 404)
+
     #param = request.args.get('param', default=1, type=int)
     #params = request.args.getlist('param')
     wu.load_module(wu.wasm_modules[module_name])
     types = wu.get_arg_types(function_name)  # get argument types
     params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
-    self_res = wu.run_function(function_name, params)
+    res = wu.run_function(function_name, params)
 
     # Return immediately if this request was purposefully made not in relation
     # to an existing deployment.
     if deployment_id == 'adhoc':
-        return jsonify({ 'result': self_res })
+        return jsonify({ 'result': res })
 
-    # Error if deployment-ID (TODO Or other access-control) does not check out.
-    if deployment_id not in deployments:
-        return endpoint_failed(request, "deployment does not exist", 404)
+    deployment = deployments[deployment_id]
 
-    next_node = deployments[deployment_id]
+    if deployment["program_counter"] > len(deployment["instructions"]):
+        return endpoint_failed(
+            request,
+             f'deployment sequence (length {len(deployment["instructions"])}) exceeded (index {deployment["program_counter"]})'
+        )
 
-    # Call next func in sequence. FIXME: Assumes GET and this way unnecessarily
-    # blocks execution although Flask probably helps in part (handle latter by
-    # making an event-loop?).
-    res = requests.get()
-    return jsonify({'result': res})
+    target = deployment['instructions'][deployment['program_counter']]['to']
+    # Update the sequence ready for next call to this deployment.
+    deployment['program_counter'] += 1
+
+    if target is None:
+        # Successful termination of the sequence resets it (NOTE: Idea not
+        # thought out).
+        deployment["program_counter"] = 0
+        # Return the result back to caller, unwinding the recursive requests.
+        return jsonify({ 'result': res })
+
+    # Call next func in sequence based on its OpenAPI description.
+    # FIXME: Assumes GET.
+    # FIXME: Assumes path is already constructed and only "method parameters"
+    # (i.e. "?foo=bar&baz=qux" in GET) need to be filled in.
+    # FIXME: Uses the paths-dict like a list with one guaranteed item.
+    target_path, path_obj = list(target['paths'].items())[0]
+
+    search = '?'
+    for param in path_obj['get']['parameters']:
+        search += f'{param["name"]}={res}&'
+
+    target_url = target['servers'][0]['url'] + '/' + target_path + search
+
+    # Request to next node.
+    # FIXME this way unnecessarily blocks execution although Flask probably
+    # helps in part (handle by making an event-loop?).
+    response = requests.get(target_url, timeout=5)
+    if response.status_code != 200:
+        return endpoint_failed(request, "Bad status code", response.status_code)
+
+    response_json = response.json()
+    # Unwind request chain.
+    return jsonify(response_json)
 
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
@@ -387,7 +423,7 @@ def get_deployment():
     if not data:
         return jsonify({'message': 'Non-existent or malformed deployment data'})
     modules = data['modules']
-    deployments[data["deploymentId"]] = data["instructions"]
+    deployments[data["deploymentId"]] = { "instructions": data["instructions"], "program_counter": 0 }
 
     if not modules:
         return jsonify({'message': 'No modules listed'})
