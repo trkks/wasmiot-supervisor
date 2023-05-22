@@ -39,15 +39,6 @@ logger = logging.getLogger(os.environ["FLASK_APP"])
 
 from flask import Flask
 
-# add sentry logging
-sentry_sdk.init(
-    dsn="https://21496afe1603434d8268411d5dc77611@o4505187176611840.ingest.sentry.io/4505187655811072",
-    integrations=[
-        FlaskIntegration(),
-    ],
-    # Set traces_sample_rate to 1.0 to capture 100%
-    traces_sample_rate=1.0
-)
 
 def create_app(*args, **kwargs) -> Flask:
     """
@@ -65,6 +56,24 @@ def create_app(*args, **kwargs) -> Flask:
 
     # Load config from instance/ -directory
     app.config.from_pyfile("config.py", silent=True)
+
+    # add sentry logging
+    app.config.setdefault('SENTRY_DSN', os.environ.get('SENTRY_DSN'))
+
+    sentry_dsn = app.config.get("SENTRY_DSN")
+
+    if sentry_dsn:
+        sentry_sdk.init(
+            dsn=sentry_dsn,
+            integrations=[
+                FlaskIntegration(),
+            ],
+            # Set traces_sample_rate to 1.0 to capture 100%
+            traces_sample_rate=1.0
+        )
+        print("Sentry logging is set up!")
+    else:
+        print("Sentry not configured")
 
     app.register_blueprint(bp)
 

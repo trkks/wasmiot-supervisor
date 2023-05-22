@@ -7,6 +7,11 @@ Install requirements:
 pip install -r requirements.txt
 ```
 
+Set up [Sentry](https://sentry.io) logging (optional):
+```
+export SENTRY_DSN="<your sentry-dsn here>"
+```
+
 Run with (requires python3)
 ```
 cd host_app
