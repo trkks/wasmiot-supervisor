@@ -220,13 +220,12 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
         )
 
     target = deployment['instructions'][deployment['program_counter']]['to']
-    # Update the sequence ready for next call to this deployment.
+    # Update the sequence ready for next call to this deployment. Wrap around if
+    # reached end of sequence.
     deployment['program_counter'] += 1
+    deployment['program_counter'] %= len(deployment['instructions'])
 
     if target is None:
-        # Successful termination of the sequence resets it (NOTE: Idea not
-        # thought out).
-        deployment["program_counter"] = 0
         # Return the result back to caller, unwinding the recursive requests.
         return jsonify({ 'result': res })
 
@@ -241,12 +240,16 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     for param in path_obj['get']['parameters']:
         search += f'{param["name"]}={res}&'
 
-    target_url = target['servers'][0]['url'] + '/' + target_path + search
+    target_url = target['servers'][0]['url'].rstrip("/") + '/' + target_path.lstrip("/") + search
 
     # Request to next node.
     # FIXME this way unnecessarily blocks execution although Flask probably
     # helps in part (handle by making an event-loop?).
-    response = requests.get(target_url, timeout=5)
+    try:
+        response = requests.get(target_url, timeout=5)
+    except requests.ReadTimeout as timeout:
+        return endpoint_failed(request, f"Request to '{target_url}' timed out: {timeout}", 500)
+
     if response.status_code != 200:
         return endpoint_failed(request, "Bad status code", response.status_code)
 
