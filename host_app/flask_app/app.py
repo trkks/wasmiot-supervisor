@@ -20,9 +20,12 @@ import cv2
 import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
+
 import wasm_utils.wasm_utils as wu
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
+from utils.deployment import Deployment, ProgramCounterExceeded
+
 
 MODULE_DIRECTORY = '../modules'
 PARAMS_FOLDER = '../params'
@@ -211,52 +214,13 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     if deployment_id == 'adhoc':
         return jsonify({ 'result': res })
 
-    deployment = deployments[deployment_id]
-
-    if deployment["program_counter"] > len(deployment["instructions"]):
-        return endpoint_failed(
-            request,
-             f'deployment sequence (length {len(deployment["instructions"])}) exceeded (index {deployment["program_counter"]})'
-        )
-
-    target = deployment['instructions'][deployment['program_counter']]['to']
-    # Update the sequence ready for next call to this deployment. Wrap around if
-    # reached end of sequence.
-    deployment['program_counter'] += 1
-    deployment['program_counter'] %= len(deployment['instructions'])
-
-    if target is None:
-        # Return the result back to caller, unwinding the recursive requests.
-        return jsonify({ 'result': res })
-
-    # Call next func in sequence based on its OpenAPI description.
-    # FIXME: Assumes GET.
-    # FIXME: Assumes path is already constructed and only "method parameters"
-    # (i.e. "?foo=bar&baz=qux" in GET) need to be filled in.
-    # FIXME: Uses the paths-dict like a list with one guaranteed item.
-    target_path, path_obj = list(target['paths'].items())[0]
-
-    search = '?'
-    for param in path_obj['get']['parameters']:
-        search += f'{param["name"]}={res}&'
-
-    target_url = target['servers'][0]['url'].rstrip("/") + '/' + target_path.lstrip("/") + search
-
-    # Request to next node.
-    # FIXME this way unnecessarily blocks execution although Flask probably
-    # helps in part (handle by making an event-loop?).
+    # TODO: Use a common error-handling function for all endpoints.
     try:
-        response = requests.get(target_url, timeout=5)
-    except requests.ReadTimeout as timeout:
-        return endpoint_failed(request, f"Request to '{target_url}' timed out: {timeout}", 500)
-
-    if response.status_code != 200:
-        return endpoint_failed(request, "Bad status code", response.status_code)
-
-    response_json = response.json()
-    # Unwind request chain.
-    return jsonify(response_json)
-
+        return deployments[deployment_id].call_chain(res)
+    except ProgramCounterExceeded as err:
+        return endpoint_failed(request, err)
+    except Exception as err:
+        return endpoint_failed(request, err, 500)
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
 def run_module_function_raw_input(module_name, function_name):
@@ -448,7 +412,7 @@ def get_deployment():
     if not data:
         return jsonify({'message': 'Non-existent or malformed deployment data'})
     modules = data['modules']
-    deployments[data["deploymentId"]] = { "instructions": data["instructions"], "program_counter": 0 }
+    deployments[data["deploymentId"]] = Deployment(data["instructions"])
 
     if not modules:
         return jsonify({'message': 'No modules listed'})
