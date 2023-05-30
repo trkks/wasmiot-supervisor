@@ -8,7 +8,7 @@ from .wasm3_api import rt, env
 class WasmModule:
     """Class for describing WebAssembly modules"""
 
-    def __init__(self, name="", path="", size=0, paramPath="", data_ptr="", model_path=""):
+    def __init__(self, name="", path="", size=0, paramPath="", data_ptr="", model_path="", description=""):
         self.name = name
         self.path = path
         self.size = size
@@ -16,6 +16,7 @@ class WasmModule:
         self.data_ptr = data_ptr
         self.task_handle = None
         self.model_path = model_path
+        self.description = description
 
 # wasm3 maps wasm function argument types as follows:
 # i32 : 1
@@ -148,7 +149,7 @@ def write_to_memory(address, bytes_data):
     except Exception as err:
         return f"Could not insert input data (length {len(bytes_data)}) into to WebAssembly memory at address ({address}): {err}"
 
-def read_from_memory(address, length_bytes):
+def read_from_memory(address, length_bytes, to_list=False):
     """
     Read length_bytes amount of bytes from WebAssembly runtime's memory starting
     from address
@@ -159,7 +160,8 @@ def read_from_memory(address, length_bytes):
     """
     try:
         wasm_memory = rt.get_memory(0)
-        return wasm_memory[address:address + length_bytes].tobytes(), None
+        block = wasm_memory[address:address + length_bytes]
+        return block.tolist() if to_list else block.tobytes(), None
     except Exception as err:
         return (
             [],

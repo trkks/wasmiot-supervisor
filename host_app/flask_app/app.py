@@ -204,7 +204,8 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
 
     #param = request.args.get('param', default=1, type=int)
     #params = request.args.getlist('param')
-    wu.load_module(wu.wasm_modules[module_name])
+    module = wu.wasm_modules[module_name]
+    wu.load_module(module)
     types = wu.get_arg_types(function_name)  # get argument types
     params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
     res = wu.run_function(function_name, params)
@@ -216,11 +217,13 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
 
     # TODO: Use a common error-handling function for all endpoints.
     try:
-        return deployments[deployment_id].call_chain(res)
+        # FIXME This very is ridiculous...
+        resp_media_type, resp_schema = list(
+            module.description['openapi']['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
+        )[0]
+        return deployments[deployment_id].call_chain(res, resp_media_type, resp_schema)
     except ProgramCounterExceeded as err:
-        return endpoint_failed(request, err)
-    except Exception as err:
-        return endpoint_failed(request, err, 500)
+        return endpoint_failed(request, str(err))
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
 def run_module_function_raw_input(module_name, function_name):
@@ -456,23 +459,27 @@ def fetch_modules(modules):
     :modules: list of names of modules to download
     """
     for module in modules:
-        r = requests.get(module["url"])
+        resBin = requests.get(module["urls"]["binary"])
+        resDesc = requests.get(module["urls"]["description"])
 
         # Check that request succeeded before continuing on.
         # TODO: Could maybe request alternative sources from orchestrator for
         # getting this module?
-        if not r.ok:
-            raise Exception(f'Fetching module \'{module["name"]}\' from \'{module["url"]}\' failed: {r.content}')
+        if not resBin.ok or not resDesc.ok:
+            raise Exception(f'Fetching module \'{module["name"]}\' from \'{module["url"]}\' failed: {resBin.content or resDesc.content}')
 
         "Request for module by name"
         module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
         # Confirm that the module directory exists and create it if not TODO:
         # This would be better performed at startup.
         os.makedirs(current_app.config["MODULE_FOLDER"], exist_ok=True)
-        open(module_path, 'wb').write(r.content)
+        with open(module_path, 'wb') as f:
+            f.write(resBin.content)
+
         "Save downloaded module to module directory"
         wu.wasm_modules[module["name"]] = wu.WasmModule(
             name=module["name"],
             path=module_path,
+            description=resDesc.json(),
         )
         "Add module details to module config"
