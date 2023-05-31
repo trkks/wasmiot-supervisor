@@ -78,17 +78,16 @@ class Deployment:
             # NOTE: This makes a blocking call.
             sub_response = None
             # Fill in the parameters according to call method.
-            if 'post' in target_path_obj and isinstance(response_obj, dict): 
-                match expected_media_type:
-                    case met if met in {'application/json', 'application/octet-stream'}:
-                        sub_response = requests.post(target_url, timeout=60, data=response_obj)
-                    case 'image/jpeg':
-                        TEMP_IMAGE_PATH = 'temp_image.jpg'
-                        cv2.imwrite(TEMP_IMAGE_PATH, response_obj)
-                        with open(TEMP_IMAGE_PATH, 'rb') as f:
-                            sub_response = requests.post(target_url, timeout=60, data=f)
-                    case _:
-                        raise NotImplementedError(f'bug: media type unhandled "{expected_media_type}"')
+            if 'post' in target_path_obj and isinstance(response_obj, dict):
+                if expected_media_type in {'application/json', 'application/octet-stream'}:
+                    sub_response = requests.post(target_url, timeout=60, data=response_obj)
+                elif expected_media_type == 'image/jpeg':
+                    TEMP_IMAGE_PATH = 'temp_image.jpg'
+                    cv2.imwrite(TEMP_IMAGE_PATH, response_obj)
+                    with open(TEMP_IMAGE_PATH, 'rb') as f:
+                        sub_response = requests.post(target_url, timeout=60, data=f)
+                else:
+                    raise NotImplementedError(f'bug: media type unhandled "{expected_media_type}"')
             else:
                 raise NotImplementedError('Only POST is supported but was not found in target endpoint description.')
 
@@ -100,46 +99,44 @@ class Deployment:
 
         # Return the result back to caller, BEGINNING the unwinding of the
         # recursive requests.
-        match expected_media_type:
-            case 'application/json':
-                return jsonify(response_obj)
-            case 'image/jpeg':
-                TEMP_IMAGE_PATH = 'temp_image.jpg'
-                cv2.imwrite(TEMP_IMAGE_PATH, response_obj)
-                return send_file(TEMP_IMAGE_PATH)
-            case 'application/octet-stream':
-                # TODO: Technically this should just return the bytes...
-                return jsonify({ 'result': response_obj })
-            case _:
-                raise NotImplementedError(f'bug: media type unhandled "{expected_media_type}"')
+        if expected_media_type == 'application/json':
+            return jsonify(response_obj)
+        elif expected_media_type == 'image/jpeg':
+            TEMP_IMAGE_PATH = 'temp_image.jpg'
+            cv2.imwrite(TEMP_IMAGE_PATH, response_obj)
+            return send_file(TEMP_IMAGE_PATH)
+        elif expected_media_type == 'application/octet-stream':
+            # TODO: Technically this should just return the bytes...
+            return jsonify({ 'result': response_obj })
+        else:
+            raise NotImplementedError(f'bug: media type unhandled "{expected_media_type}"')
      
 def parse_func_result(func_result, expected_media_type, expected_schema):
     '''
     Interpret the result of a function call based on the function's OpenAPI
     description.
     '''
-    match expected_media_type:
-        # DEMO: This is how the Camera service is invoked (no input).
-        case 'application/json':
-            response_obj = None
-        # DEMO: This is how the ML service is sent an image.
-        case 'image/jpeg':
-            # Read the constant sized image from memory.
-            # FIXME Assuming this function giving the buffer address is found in
-            # the module.
-            img_address = wu.run_function('get_img_ptr', b'')
-            # FIXME Assuming the buffer size is according to this constant
-            # shape.
-            img_shape = (480, 640, 3)
-            img_bytes, err = wu.read_from_memory(img_address, prod(img_shape), to_list=True)
-            if err:
-                raise RuntimeError(f'Could not read image from memory: {err}')
-            response_obj = np.array(img_bytes).reshape(img_shape)
-        # DEMO: This how the Camera service receives back the classification result.
-        case 'application/octet-stream':
-            response_obj = func_result
-        case _:
-            raise NotImplementedError(f'Unsupported response media type {expected_media_type}')
+    # DEMO: This is how the Camera service is invoked (no input).
+    if expected_media_type == 'application/json':
+        response_obj = None
+    # DEMO: This is how the ML service is sent an image.
+    elif expected_media_type == 'image/jpeg':
+        # Read the constant sized image from memory.
+        # FIXME Assuming this function giving the buffer address is found in
+        # the module.
+        img_address = wu.run_function('get_img_ptr', b'')
+        # FIXME Assuming the buffer size is according to this constant
+        # shape.
+        img_shape = (480, 640, 3)
+        img_bytes, err = wu.read_from_memory(img_address, prod(img_shape), to_list=True)
+        if err:
+            raise RuntimeError(f'Could not read image from memory: {err}')
+        response_obj = np.array(img_bytes).reshape(img_shape)
+    # DEMO: This how the Camera service receives back the classification result.
+    elif expected_media_type == 'application/octet-stream':
+        response_obj = func_result
+    else:
+        raise NotImplementedError(f'Unsupported response media type {expected_media_type}')
 
     return response_obj 
 
