@@ -72,20 +72,20 @@ class Deployment:
             # Call next func in sequence based on its OpenAPI description.
             target_path, target_path_obj = list(target['paths'].items())[0]
 
-            target_url = target['servers'][0]['url'].rstrip("/") + '/' + target_path.lstrip("/") + search
+            target_url = target['servers'][0]['url'].rstrip("/") + '/' + target_path.lstrip("/")
 
             # Request to next node.
             # NOTE: This makes a blocking call.
             sub_response = None
             # Fill in the parameters according to call method.
-            if 'post' in target_path_obj and isinstance(response_obj, dict):
-                if expected_media_type in {'application/json', 'application/octet-stream'}:
+            if 'post' in target_path_obj:
+                if expected_media_type in {'application/json', 'application/octet-stream'} and isinstance(response_obj, dict):
                     sub_response = requests.post(target_url, timeout=60, data=response_obj)
                 elif expected_media_type == 'image/jpeg':
                     TEMP_IMAGE_PATH = 'temp_image.jpg'
                     cv2.imwrite(TEMP_IMAGE_PATH, response_obj)
                     with open(TEMP_IMAGE_PATH, 'rb') as f:
-                        sub_response = requests.post(target_url, timeout=60, data=f)
+                        sub_response = requests.post(target_url, timeout=60, files={ "data": f })
                 else:
                     raise NotImplementedError(f'bug: media type unhandled "{expected_media_type}"')
             else:
@@ -95,12 +95,13 @@ class Deployment:
             if sub_response.status_code != 200:
                 raise RequestFailed(f'Bad status code {sub_response.status_code}')
 
-            response_obj = sub_response.data
+            response_obj = sub_response.content
+            expected_media_type = sub_response.headers['Content-Type']
 
         # Return the result back to caller, BEGINNING the unwinding of the
         # recursive requests.
         if expected_media_type == 'application/json':
-            return jsonify(response_obj)
+            return jsonify(str(response_obj))
         elif expected_media_type == 'image/jpeg':
             TEMP_IMAGE_PATH = 'temp_image.jpg'
             cv2.imwrite(TEMP_IMAGE_PATH, response_obj)

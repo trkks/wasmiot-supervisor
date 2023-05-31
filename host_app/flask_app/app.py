@@ -341,14 +341,32 @@ def run_ml_module(module_name = None):
     if not module_name:
         return jsonify({'status': 'error', 'result': 'module not found'})
 
-    wu.load_module(wu.wasm_modules[module_name])
+    module = wu.wasm_modules[module_name]
+    # Re-initialize runtime to clear memory.
+    wu.rt = wu.env.new_runtime(15000)
+    wu.load_module(module)
 
     file = request.files['data']
     if not file:
         return jsonify({'status': 'error', 'result': "file 'data' not in request"})
 
     res = wu.run_ml_model(module_name, file) 
-    return jsonify({'status': 'success', 'result': res})
+
+    # TODO: Use a common error-handling function for all endpoints.
+    try:
+        # FIXME This very is ridiculous...
+        resp_media_type, resp_schema = list(
+            module.description['openapi']['paths'][f'/ml/{{module}}']['post']['responses']['200']['content'].items()
+        )[0]
+        # TODO: Use the deployment-ID from the request.
+        deployment_id = list(deployments.keys())[0]
+        return deployments[deployment_id].call_chain(res, resp_media_type, resp_schema)
+    except ProgramCounterExceeded as err:
+        return endpoint_failed(request, str(err))
+    except Exception as err:
+        return endpoint_failed(request, str(err))
+
+
 
 @bp.route('/ml/model/<module_name>', methods=['POST'])
 def upload_ml_model(module_name = None):
@@ -459,14 +477,14 @@ def fetch_modules(modules):
     :modules: list of names of modules to download
     """
     for module in modules:
-        resBin = requests.get(module["urls"]["binary"])
-        resDesc = requests.get(module["urls"]["description"])
+        res_bin = requests.get(module["urls"]["binary"])
+        res_desc = requests.get(module["urls"]["description"])
 
         # Check that request succeeded before continuing on.
         # TODO: Could maybe request alternative sources from orchestrator for
         # getting this module?
-        if not resBin.ok or not resDesc.ok:
-            raise Exception(f'Fetching module \'{module["name"]}\' from \'{module["url"]}\' failed: {resBin.content or resDesc.content}')
+        if not res_bin.ok or not res_desc.ok:
+            raise Exception(f'Fetching module \'{module["name"]}\' from \'{module["url"]}\' failed: {res_bin.content or res_desc.content}')
 
         "Request for module by name"
         module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
@@ -474,12 +492,26 @@ def fetch_modules(modules):
         # This would be better performed at startup.
         os.makedirs(current_app.config["MODULE_FOLDER"], exist_ok=True)
         with open(module_path, 'wb') as f:
-            f.write(resBin.content)
+            f.write(res_bin.content)
 
         "Save downloaded module to module directory"
         wu.wasm_modules[module["name"]] = wu.WasmModule(
             name=module["name"],
             path=module_path,
-            description=resDesc.json(),
+            description=res_desc.json(),
         )
         "Add module details to module config"
+
+        # Add other listed files related to the module.
+        # FIXME Assuming only one url and that it is for the model.
+        for other_url in module["urls"]["other"]:
+            res_other = requests.get(other_url)
+            if not res_other.ok:
+                raise Exception(f'Fetching module \'{module["name"]}\' from \'{other_url}\' failed: {res_other.content}')
+            otherPath = wu.wasm_modules[module['name']].model_path
+            if not otherPath:
+                otherPath = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
+                wu.wasm_modules[module['name']].model_path = otherPath
+            otherPath.parent.mkdir(exist_ok=True, parents=True)
+            with open(otherPath, 'wb') as f:
+                f.write(res_other.content)

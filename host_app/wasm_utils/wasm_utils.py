@@ -98,7 +98,11 @@ def run_ml_model(mod_name, image_fh):
 
     model = open(wasm_modules[mod_name].model_path, 'rb')
     model_size = os.path.getsize(wasm_modules[mod_name].model_path)
-    model_ptr = alloc(model_size)
+    try:
+        model_ptr = alloc(model_size)
+    except Exception as e:
+        print(e)
+        return None
 
     image = image_fh.read()
     image_size = len(image)
