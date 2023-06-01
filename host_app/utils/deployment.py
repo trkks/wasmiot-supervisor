@@ -85,7 +85,10 @@ class Deployment:
                     TEMP_IMAGE_PATH = 'temp_image.jpg'
                     cv2.imwrite(TEMP_IMAGE_PATH, response_obj)
                     with open(TEMP_IMAGE_PATH, 'rb') as f:
-                        sub_response = requests.post(target_url, timeout=60, files={ "data": f })
+                        try:
+                            sub_response = requests.post(target_url, timeout=60, files={ "data": f })
+                        except requests.exceptions.ConnectionError as e:
+                            raise RequestFailed(f'Connection error: {e}')
                 else:
                     raise NotImplementedError(f'bug: media type unhandled "{expected_media_type}"')
             else:

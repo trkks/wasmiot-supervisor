@@ -24,7 +24,7 @@ from sentry_sdk.integrations.flask import FlaskIntegration
 import wasm_utils.wasm_utils as wu
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
-from utils.deployment import Deployment, ProgramCounterExceeded
+from utils.deployment import Deployment, ProgramCounterExceeded, RequestFailed
 
 
 MODULE_DIRECTORY = '../modules'
@@ -224,6 +224,8 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
         return deployments[deployment_id].call_chain(res, resp_media_type, resp_schema)
     except ProgramCounterExceeded as err:
         return endpoint_failed(request, str(err))
+    except RequestFailed as err:
+        return endpoint_failed(request, "Check device conncetions: " + str(err))
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
 def run_module_function_raw_input(module_name, function_name):
