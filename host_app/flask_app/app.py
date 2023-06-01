@@ -218,10 +218,10 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     # TODO: Use a common error-handling function for all endpoints.
     try:
         # FIXME This very is ridiculous...
-        resp_media_type, resp_schema = list(
+        resp_media_type, resp_obj = list(
             module.description['openapi']['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
         )[0]
-        return deployments[deployment_id].call_chain(res, resp_media_type, resp_schema)
+        return deployments[deployment_id].call_chain(res, resp_media_type, resp_obj.get("schema"))
     except ProgramCounterExceeded as err:
         return endpoint_failed(request, str(err))
     except RequestFailed as err:
@@ -351,7 +351,7 @@ def run_ml_module(module_name = None):
     wu.rt = wu.env.new_runtime(15000)
     wu.load_module(module)
 
-    file = request.files['data']
+    file = request.data
     if not file:
         return jsonify({'status': 'error', 'result': "file 'data' not in request"})
 
