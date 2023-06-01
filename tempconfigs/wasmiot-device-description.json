@@ -1,0 +1,27 @@
+{
+    "platform": {
+        "memory": {
+            "bytes": null
+        },
+        "cpu": {
+            "humanReadableName": null,
+            "clockSpeed": {
+                "Hz": null
+            }
+        }
+    },
+    "supervisorInterfaces": [
+        "millis",
+        "delay",
+        "print",
+        "println",
+        "printInt",
+        "rpcCall",
+        "takeImage",
+        "fd_write",
+        "random_get",
+        "environ_sizes_get",
+        "proc_exit",
+        "environ_get"
+    ]
+}
