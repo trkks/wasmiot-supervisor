@@ -113,7 +113,11 @@ def run_ml_model(mod_name, image_fh):
     mem[image_ptr:image_ptr+image_size] = image
 
     infer = rt.find_function("infer_from_ptrs")
-    res = infer(model_ptr, model_size, image_ptr, image_size)
+    try:
+        res = infer(model_ptr, model_size, image_ptr, image_size)
+    except Exception as e:
+        print(e)
+        return None
     print("Inference result:", res)
     return res
 

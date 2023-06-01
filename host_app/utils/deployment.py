@@ -32,24 +32,9 @@ class Deployment:
         Choose the next instruction's target and increment internal state to
         prepare for the next call.
         '''
-        target = self.instructions[self.program_counter]['to']
+        target = self.instructions[0]['to']
         # Update the sequence ready for next call to this deployment.
-        self._increment_program_counter()
         return target
-
-    def _increment_program_counter(self):
-        '''
-        Set `self` to point to the next instruction in the sequence.
-        '''
-        self.program_counter += 1
-
-        # TEMPORARY FOR DEBUG: wrap around to beginning of sequence.
-        self.program_counter %= len(self.instructions)
-
-        if self.program_counter >= len(self.instructions):
-            raise ProgramCounterExceeded(
-                f'deployment sequence (length {len(self.instructions)}) exceeded (index {self.program_counter})'
-            )
 
     def call_chain(self, func_result, expected_media_type, expected_schema):
         '''
@@ -89,6 +74,9 @@ class Deployment:
                             sub_response = requests.post(target_url, timeout=60, files={ "data": f })
                         except requests.exceptions.ConnectionError as e:
                             raise RequestFailed(f'Connection error: {e}')
+                elif expected_media_type == 'application/octet-stream':
+                    # TODO: Technically this should just return the bytes...
+                    return jsonify({ 'result': response_obj })
                 else:
                     raise NotImplementedError(f'bug: media type unhandled "{expected_media_type}"')
             else:

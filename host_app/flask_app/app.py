@@ -3,7 +3,7 @@ from pathlib import Path
 import atexit
 import re
 from typing import Tuple
-from flask import Flask, Blueprint, jsonify, current_app, request
+from flask import Flask, Blueprint, jsonify, current_app, request, send_file
 from flask.helpers import get_debug_flag
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
@@ -336,6 +336,9 @@ def run_module_function_raw_input(module_name, function_name):
 
     return jsonify({ 'result': result })
 
+@bp.route('/foo')
+def serve_test_jpg():
+    return send_file('temp_image.jpg')
 
 @bp.route('/ml/<module_name>', methods=['POST'])
 def run_ml_module(module_name = None):
