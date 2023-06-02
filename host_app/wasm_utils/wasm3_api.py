@@ -4,11 +4,22 @@ import wasm3
 import requests
 import cv2
 import numpy as np
+from contextvars import ContextVar
 
 from utils.configuration import remote_functions, modules
 
-env = wasm3.Environment()
-rt = env.new_runtime(15000)
+RUNTIME_INIT_MEMORY = 15000
+from werkzeug.local import LocalProxy
+
+# Create runtime proxy
+# To set runtime,
+_wasm_env = ContextVar("wasm_env")
+_wasm_rt = ContextVar("wasm_rt")
+
+env = LocalProxy(_wasm_env)
+rt = LocalProxy(_wasm_rt)
+
+
 
 #remote_functions = {
 #    'convert2Grayscale': {

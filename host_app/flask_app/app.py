@@ -3,7 +3,7 @@ from pathlib import Path
 import atexit
 import re
 from typing import Tuple
-from flask import Flask, Blueprint, jsonify, current_app, request
+from flask import Flask, Blueprint, jsonify, current_app, request, send_file
 from flask.helpers import get_debug_flag
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
@@ -20,11 +20,14 @@ import cv2
 import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
+#from sentry_sdk.integrations import RequestsIntegration
 
 import wasm_utils.wasm_utils as wu
+from wasm_utils.wasm3_api import _wasm_rt, _wasm_env
+
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
-from utils.deployment import Deployment, ProgramCounterExceeded
+from utils.deployment import Deployment, ProgramCounterExceeded, RequestFailed
 
 
 MODULE_DIRECTORY = '../modules'
@@ -86,6 +89,7 @@ def create_app(*args, **kwargs) -> Flask:
             dsn=sentry_dsn,
             integrations=[
                 FlaskIntegration(),
+                #RequestsIntegration(),
             ],
             # Set traces_sample_rate to 1.0 to capture 100%
             traces_sample_rate=1.0
@@ -198,16 +202,19 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     if not module_name or not function_name:
         return jsonify({'result': 'not found'})
 
+    module = wu.wasm_modules[module_name]
+    _wasm_rt.set(module.runtime)
+    _wasm_env.set(module.env)
+
     # Error if deployment-ID (TODO Or other access-control) does not check out.
     if deployment_id != 'adhoc' and deployment_id not in deployments:
         return endpoint_failed(request, 'deployment does not exist', 404)
 
     #param = request.args.get('param', default=1, type=int)
     #params = request.args.getlist('param')
-    wu.load_module(wu.wasm_modules[module_name])
-    types = wu.get_arg_types(function_name)  # get argument types
+    types = module.get_arg_types(function_name)  # get argument types
     params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
-    res = wu.run_function(function_name, params)
+    res = module.run_function(function_name, params)
 
     # Return immediately if this request was purposefully made not in relation
     # to an existing deployment.
@@ -216,11 +223,15 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
 
     # TODO: Use a common error-handling function for all endpoints.
     try:
-        return deployments[deployment_id].call_chain(res)
+        # FIXME This very is ridiculous...
+        resp_media_type, resp_obj = list(
+            module.description['openapi']['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
+        )[0]
+        return deployments[deployment_id].call_chain(res, resp_media_type, resp_obj.get("schema"))
     except ProgramCounterExceeded as err:
-        return endpoint_failed(request, err)
-    except Exception as err:
-        return endpoint_failed(request, err, 500)
+        return endpoint_failed(request, str(err))
+    except RequestFailed as err:
+        return endpoint_failed(request, "Check device conncetions: " + str(err))
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
 def run_module_function_raw_input(module_name, function_name):
@@ -331,6 +342,9 @@ def run_module_function_raw_input(module_name, function_name):
 
     return jsonify({ 'result': result })
 
+@bp.route('/foo')
+def serve_test_jpg():
+    return send_file('temp_image.jpg')
 
 @bp.route('/ml/<module_name>', methods=['POST'])
 def run_ml_module(module_name = None):
@@ -338,14 +352,34 @@ def run_ml_module(module_name = None):
     if not module_name:
         return jsonify({'status': 'error', 'result': 'module not found'})
 
-    wu.load_module(wu.wasm_modules[module_name])
+    module = wu.wasm_modules[module_name]
+    #wu.rt = module.runtime
+    #wu.env = module.env
+
+    _wasm_rt.set(module.runtime)
+    _wasm_env.set(module.env)
 
     file = request.files['data']
     if not file:
         return jsonify({'status': 'error', 'result': "file 'data' not in request"})
 
-    res = wu.run_ml_model(module_name, file) 
-    return jsonify({'status': 'success', 'result': res})
+    res = wu.run_ml_model(module_name, file)
+
+    # TODO: Use a common error-handling function for all endpoints.
+    try:
+        # FIXME This very is ridiculous...
+        resp_media_type, resp_schema = list(
+            module.description['openapi']['paths'][f'/ml/{{module}}']['post']['responses']['200']['content'].items()
+        )[0]
+        # TODO: Use the deployment-ID from the request.
+        deployment_id = list(deployments.keys())[0]
+        return deployments[deployment_id].call_chain(res, resp_media_type, resp_schema)
+    except ProgramCounterExceeded as err:
+        return endpoint_failed(request, str(err))
+    except Exception as err:
+        return endpoint_failed(request, str(err))
+
+
 
 @bp.route('/ml/model/<module_name>', methods=['POST'])
 def upload_ml_model(module_name = None):
@@ -456,23 +490,41 @@ def fetch_modules(modules):
     :modules: list of names of modules to download
     """
     for module in modules:
-        r = requests.get(module["url"])
+        # Make all the requests at once.
+        res_bin = requests.get(module["urls"]["binary"])
+        res_desc = requests.get(module["urls"]["description"])
+        res_others = [requests.get(x) for x in module["urls"]["other"]]
 
-        # Check that request succeeded before continuing on.
-        # TODO: Could maybe request alternative sources from orchestrator for
-        # getting this module?
-        if not r.ok:
-            raise Exception(f'Fetching module \'{module["name"]}\' from \'{module["url"]}\' failed: {r.content}')
+        # Check that each request succeeded before continuing on.
+        if not res_bin.ok or not res_desc.ok or any(map(lambda x: not x.ok, res_others)):
+            # TODO: Tell which ones failed.
+            raise Exception(f'Fetching file for module \'{module["name"]}\' from \'{module["urls"]}\' failed')
 
         "Request for module by name"
         module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
         # Confirm that the module directory exists and create it if not TODO:
         # This would be better performed at startup.
         os.makedirs(current_app.config["MODULE_FOLDER"], exist_ok=True)
-        open(module_path, 'wb').write(r.content)
+        with open(module_path, 'wb') as f:
+            f.write(res_bin.content)
+
         "Save downloaded module to module directory"
         wu.wasm_modules[module["name"]] = wu.WasmModule(
             name=module["name"],
             path=module_path,
+            description=res_desc.json(),
         )
         "Add module details to module config"
+
+        # Add other listed files related to the module.
+
+        for res_other in res_others:
+            # FIXME Assuming only one url and that it is for the model.
+            other_path = wu.wasm_modules[module['name']].model_path
+            if not other_path:
+                other_path = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
+                wu.wasm_modules[module['name']].model_path = other_path
+
+            other_path.parent.mkdir(exist_ok=True, parents=True)
+            with open(other_path, 'wb') as f:
+                f.write(res_other.content)

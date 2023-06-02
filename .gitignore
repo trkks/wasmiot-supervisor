@@ -173,3 +173,6 @@ params/
 *.txt
 
 *.wasm
+
+*.jpg
+*.jpeg

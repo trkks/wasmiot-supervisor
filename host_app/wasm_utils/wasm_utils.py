@@ -1,21 +1,46 @@
 import os
 import threading
 
+import wasm3
+
 from utils.configuration import remote_functions, modules
 from . import wasm3_api as w3
-from .wasm3_api import rt, env
+from .wasm3_api import env, rt
 
 class WasmModule:
     """Class for describing WebAssembly modules"""
 
-    def __init__(self, name="", path="", size=0, paramPath="", data_ptr="", model_path=""):
+    def __init__(self, name="", path="", size=0, paramPath="", data_ptr="", model_path="", description=""):
         self.name = name
         self.path = path
+
+        self.env = wasm3.Environment()
+        self.runtime = self.env.new_runtime(w3.RUNTIME_INIT_MEMORY)
+        with open(path, "rb") as f:
+            self.instance = self.env.parse_module(f.read())
+            self.runtime.load(self.instance)
+            w3.link_functions(self.instance)
+
         self.size = size
         self.paramPath = paramPath
         self.data_ptr = data_ptr
         self.task_handle = None
         self.model_path = model_path
+        self.description = description
+
+    def run_function(self, fname, params):
+        # Set wasm3 runtime for this thread
+        from .wasm3_api import _wasm_rt
+        _wasm_rt.set(self.runtime)
+
+        func = self.runtime.find_function(fname)
+        if not params: return func()
+        return func(*params)
+
+    def get_arg_types(self, fname):
+        func = self.runtime.find_function(fname)
+        return list(map(lambda x: arg_types[x], func.arg_types))
+    
 
 # wasm3 maps wasm function argument types as follows:
 # i32 : 1
@@ -97,7 +122,11 @@ def run_ml_model(mod_name, image_fh):
 
     model = open(wasm_modules[mod_name].model_path, 'rb')
     model_size = os.path.getsize(wasm_modules[mod_name].model_path)
-    model_ptr = alloc(model_size)
+    try:
+        model_ptr = alloc(model_size)
+    except Exception as e:
+        print(e)
+        return None
 
     image = image_fh.read()
     image_size = len(image)
@@ -108,7 +137,11 @@ def run_ml_model(mod_name, image_fh):
     mem[image_ptr:image_ptr+image_size] = image
 
     infer = rt.find_function("infer_from_ptrs")
-    res = infer(model_ptr, model_size, image_ptr, image_size)
+    try:
+        res = infer(model_ptr, model_size, image_ptr, image_size)
+    except Exception as e:
+        print(e)
+        return None
     print("Inference result:", res)
     return res
 
@@ -148,7 +181,7 @@ def write_to_memory(address, bytes_data):
     except Exception as err:
         return f"Could not insert input data (length {len(bytes_data)}) into to WebAssembly memory at address ({address}): {err}"
 
-def read_from_memory(address, length_bytes):
+def read_from_memory(address, length_bytes, to_list=False):
     """
     Read length_bytes amount of bytes from WebAssembly runtime's memory starting
     from address
@@ -159,7 +192,10 @@ def read_from_memory(address, length_bytes):
     """
     try:
         wasm_memory = rt.get_memory(0)
-        return wasm_memory[address:address + length_bytes].tobytes(), None
+        block = wasm_memory[address:address + length_bytes]
+        bytes = block.tobytes()
+        #return block.tolist() if to_list else block.tobytes(), None
+        return block, None
     except Exception as err:
         return (
             [],
