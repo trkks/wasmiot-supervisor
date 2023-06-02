@@ -351,7 +351,7 @@ def run_ml_module(module_name = None):
     wu.rt = wu.env.new_runtime(15000)
     wu.load_module(module)
 
-    file = request.data
+    file = request.files['data']
     if not file:
         return jsonify({'status': 'error', 'result': "file 'data' not in request"})
 

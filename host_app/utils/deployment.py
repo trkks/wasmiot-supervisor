@@ -4,13 +4,15 @@ of "things" (i.e., WebAssembly services/functions on devices) and executing
 their instructions.
 '''
 
+import json
+import struct
 from dataclasses import dataclass
 from math import prod
 
 import cv2
-from flask import jsonify, send_file
 import numpy as np
 import requests
+from flask import jsonify
 
 import wasm_utils.wasm_utils as wu
 
@@ -59,41 +61,10 @@ class Deployment:
         sub_request_is_needed = target is not None
 
         if sub_request_is_needed:
-            # Call next func in sequence based on its OpenAPI description.
-            target_path, target_path_obj = list(target['paths'].items())[0]
-
-            target_url = target['servers'][0]['url'].rstrip("/") + '/' + target_path.lstrip("/")
-
-            # Request to next node.
-            # NOTE: This makes a blocking call.
-            sub_response = None
-            # Fill in the parameters according to call method.
-            if 'post' in target_path_obj:
-                sub_response = request_to(target_url, func_out_media_type, parsed_result)
-            else:
-                raise NotImplementedError('Only POST is supported but was not found in target endpoint description.')
-
-            # TODO: handle different response codes based on OpenAPI description.
-            if sub_response.status_code != 200:
-                raise RequestFailed(f'Bad status code {sub_response.status_code}')
-
-            # FIXME: This is changed here in order to have the return type of
-            # the whole chain be the same as return type of the last sequence in
-            # the chain e.g. 
-            #   Actor -> (None: Img) -> (Img: Int)
-            # unravels as:
-            #   Actor <- (None: Int) <- (Img: Int)
-            func_out_media_type = sub_response.headers['Content-Type']
-
-        # Return the result back to caller, BEGINNING the unwinding of the
-        # recursive requests.
-        if func_out_media_type == 'application/octet-stream':
-            # TODO: Technically this should just return the bytes but figuring
-            # that out seems too much of a hassle right now...
-            return jsonify({ "result": parsed_result })
+            return handle_sub_request(target, parsed_result, func_out_media_type)
         else:
-            raise NotImplementedError(f'bug: media type unhandled "{func_out_media_type}"')
-     
+            return return_immediately(parsed_result, func_out_media_type)
+             
 def parse_func_result(func_result, expected_media_type, expected_schema):
     '''
     Interpret the result of a function call based on the function's OpenAPI
@@ -127,7 +98,7 @@ def parse_func_result(func_result, expected_media_type, expected_schema):
 
 def request_to(url, media_type, payload):
     """
-    Make a (sub or 'recursive') request to a URL selecting the placing of
+    Make a (sub or 'recursive') POST request to a URL selecting the placing of
     payload from media type.
 
     :return Response from `requests.post`
@@ -162,3 +133,48 @@ def request_to(url, media_type, payload):
         files=files,
         headers=headers,
     )
+
+def handle_sub_request(target, input_value, input_type):
+    """
+    Call the target endpoint with input.
+
+    :return Response compatible with a Flask route's response (i.e., JSON, text etc.).
+    """
+
+    target_path, target_path_obj = list(target['paths'].items())[0]
+
+    target_url = target['servers'][0]['url'].rstrip("/") + '/' + target_path.lstrip("/")
+
+    # Request to next node.
+    # NOTE: This makes a blocking call.
+    response = None
+    # Fill in the parameters according to call method.
+    if 'post' in target_path_obj:
+        response = request_to(target_url, input_type, input_value)
+    else:
+        raise NotImplementedError('Only POST is supported but was not found in target endpoint description.')
+
+    # TODO: handle different response codes based on OpenAPI description.
+    if response.status_code != 200:
+        raise RequestFailed(f'Bad status code {response.status_code}')
+    
+    # From:
+    # https://stackoverflow.com/questions/19568950/return-a-requests-response-object-from-flask
+    return response.content, response.status_code, response.headers.items()
+
+def return_immediately(output_value, output_type):
+    """
+
+    :return Response compatible with a Flask route's response (i.e., JSON, text etc.).
+    """
+    # Return the result back to caller, BEGINNING the unwinding of the
+    # recursive requests.
+    if output_type == 'application/octet-stream':
+        # TODO: Technically this should just return the bytes but figuring
+        # that out seems too much of a hassle right now...
+        bytes = [b for b in struct.pack("<I", output_value)]
+        return bytes
+    elif output_type == "application/json":
+        return jsonify(json.loads(output_value))
+    else:
+        raise NotImplementedError(f'bug: media type unhandled "{output_type}"')
