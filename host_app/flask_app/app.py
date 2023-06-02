@@ -20,8 +20,11 @@ import cv2
 import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
+#from sentry_sdk.integrations import RequestsIntegration
 
 import wasm_utils.wasm_utils as wu
+from wasm_utils.wasm3_api import _wasm_rt, _wasm_env
+
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
 from utils.deployment import Deployment, ProgramCounterExceeded, RequestFailed
@@ -86,6 +89,7 @@ def create_app(*args, **kwargs) -> Flask:
             dsn=sentry_dsn,
             integrations=[
                 FlaskIntegration(),
+                #RequestsIntegration(),
             ],
             # Set traces_sample_rate to 1.0 to capture 100%
             traces_sample_rate=1.0
@@ -198,16 +202,19 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     if not module_name or not function_name:
         return jsonify({'result': 'not found'})
 
+    module = wu.wasm_modules[module_name]
+    _wasm_rt.set(module.runtime)
+    _wasm_env.set(module.env)
+
     # Error if deployment-ID (TODO Or other access-control) does not check out.
     if deployment_id != 'adhoc' and deployment_id not in deployments:
         return endpoint_failed(request, 'deployment does not exist', 404)
 
     #param = request.args.get('param', default=1, type=int)
     #params = request.args.getlist('param')
-    module = wu.wasm_modules[module_name]
-    types = wu.get_arg_types(function_name)  # get argument types
+    types = module.get_arg_types(function_name)  # get argument types
     params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
-    res = wu.run_function(function_name, params)
+    res = module.run_function(function_name, params)
 
     # Return immediately if this request was purposefully made not in relation
     # to an existing deployment.
@@ -346,12 +353,17 @@ def run_ml_module(module_name = None):
         return jsonify({'status': 'error', 'result': 'module not found'})
 
     module = wu.wasm_modules[module_name]
+    #wu.rt = module.runtime
+    #wu.env = module.env
+
+    _wasm_rt.set(module.runtime)
+    _wasm_env.set(module.env)
 
     file = request.files['data']
     if not file:
         return jsonify({'status': 'error', 'result': "file 'data' not in request"})
 
-    res = wu.run_ml_model(module_name, file) 
+    res = wu.run_ml_model(module_name, file)
 
     # TODO: Use a common error-handling function for all endpoints.
     try:
@@ -445,12 +457,6 @@ def get_deployment():
         msg = f"Fetching modules failed: {err}"
         print(msg)
         return endpoint_failed(request, msg)
-
-    # Load up all the modules in advance.
-    # TODO: Select only the ones in this deployment.
-    for module in wu.wasm_modules.values():
-        wu.load_module(module)
-
 
     # If the fetching did not fail (that is, crash), return success.
     return jsonify({'status': 'success'})

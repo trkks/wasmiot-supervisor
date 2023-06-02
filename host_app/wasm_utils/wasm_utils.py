@@ -1,9 +1,11 @@
 import os
 import threading
 
+import wasm3
+
 from utils.configuration import remote_functions, modules
 from . import wasm3_api as w3
-from .wasm3_api import rt, env
+from .wasm3_api import env, rt
 
 class WasmModule:
     """Class for describing WebAssembly modules"""
@@ -11,12 +13,34 @@ class WasmModule:
     def __init__(self, name="", path="", size=0, paramPath="", data_ptr="", model_path="", description=""):
         self.name = name
         self.path = path
+
+        self.env = wasm3.Environment()
+        self.runtime = self.env.new_runtime(w3.RUNTIME_INIT_MEMORY)
+        with open(path, "rb") as f:
+            self.instance = self.env.parse_module(f.read())
+            self.runtime.load(self.instance)
+            w3.link_functions(self.instance)
+
         self.size = size
         self.paramPath = paramPath
         self.data_ptr = data_ptr
         self.task_handle = None
         self.model_path = model_path
         self.description = description
+
+    def run_function(self, fname, params):
+        # Set wasm3 runtime for this thread
+        from .wasm3_api import _wasm_rt
+        _wasm_rt.set(self.runtime)
+
+        func = self.runtime.find_function(fname)
+        if not params: return func()
+        return func(*params)
+
+    def get_arg_types(self, fname):
+        func = self.runtime.find_function(fname)
+        return list(map(lambda x: arg_types[x], func.arg_types))
+    
 
 # wasm3 maps wasm function argument types as follows:
 # i32 : 1
@@ -169,7 +193,9 @@ def read_from_memory(address, length_bytes, to_list=False):
     try:
         wasm_memory = rt.get_memory(0)
         block = wasm_memory[address:address + length_bytes]
-        return block.tolist() if to_list else block.tobytes(), None
+        bytes = block.tobytes()
+        #return block.tolist() if to_list else block.tobytes(), None
+        return block, None
     except Exception as err:
         return (
             [],

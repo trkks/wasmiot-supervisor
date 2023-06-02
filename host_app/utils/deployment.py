@@ -82,10 +82,11 @@ def parse_func_result(func_result, expected_media_type, expected_schema):
         # Read the constant sized image from memory.
         # FIXME Assuming there is this function that gives the buffer address
         # found in the module.
-        img_address = wu.run_function('get_img_ptr', b'')
+        img_address = wu.rt.find_function('get_img_ptr')()
         # FIXME Assuming the buffer size is according to this constant
         # shape.
-        img_bytes, err = wu.read_from_memory(img_address, prod(WASM_MEM_IMG_SHAPE), to_list=True)
+        data_len = prod(WASM_MEM_IMG_SHAPE)
+        img_bytes, err = wu.read_from_memory(img_address, data_len, to_list=True)
         if err:
             raise RuntimeError(f'Could not read image from memory: {err}')
         # Store raw bytes for now.
@@ -118,8 +119,10 @@ def request_to(url, media_type, payload):
         TEMP_IMAGE_PATH = 'temp_image.jpg'
         # NOTE: 'payload' at this point expected to be raw bytes read from
         # memory.
+
         img = np.array(payload).reshape(WASM_MEM_IMG_SHAPE)
         cv2.imwrite(TEMP_IMAGE_PATH, img)
+
         # TODO: Is this 'data' key hardcoded into ML-path and should it
         # instead be in an OpenAPI doc?
         files.append(("data", TEMP_IMAGE_PATH, "rb"))
