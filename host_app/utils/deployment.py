@@ -133,7 +133,7 @@ def request_to(url, media_type, payload):
 
     return requests.post(
         url,
-        timeout=60,
+        timeout=120,
         data=data,
         files=files,
         headers=headers,
