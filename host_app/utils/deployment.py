@@ -40,6 +40,8 @@ class Deployment:
         target = self.instructions[self.program_counter]['to']
         # Update the sequence ready for next call to this deployment.
         self.program_counter += 1
+        # DEBUG: Wrap to beginning.
+        self.program_counter %= len(self.instructions)
         return target
 
     def call_chain(self, func_result, func_out_media_type, func_out_schema):

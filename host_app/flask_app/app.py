@@ -205,7 +205,6 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     #param = request.args.get('param', default=1, type=int)
     #params = request.args.getlist('param')
     module = wu.wasm_modules[module_name]
-    wu.load_module(module)
     types = wu.get_arg_types(function_name)  # get argument types
     params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
     res = wu.run_function(function_name, params)
@@ -347,9 +346,6 @@ def run_ml_module(module_name = None):
         return jsonify({'status': 'error', 'result': 'module not found'})
 
     module = wu.wasm_modules[module_name]
-    # Re-initialize runtime to clear memory.
-    wu.rt = wu.env.new_runtime(15000)
-    wu.load_module(module)
 
     file = request.files['data']
     if not file:
@@ -450,6 +446,12 @@ def get_deployment():
         print(msg)
         return endpoint_failed(request, msg)
 
+    # Load up all the modules in advance.
+    # TODO: Select only the ones in this deployment.
+    for module in wu.wasm_modules.values():
+        wu.load_module(module)
+
+
     # If the fetching did not fail (that is, crash), return success.
     return jsonify({'status': 'success'})
 
@@ -482,14 +484,15 @@ def fetch_modules(modules):
     :modules: list of names of modules to download
     """
     for module in modules:
+        # Make all the requests at once.
         res_bin = requests.get(module["urls"]["binary"])
         res_desc = requests.get(module["urls"]["description"])
+        res_others = [requests.get(x) for x in module["urls"]["other"]]
 
-        # Check that request succeeded before continuing on.
-        # TODO: Could maybe request alternative sources from orchestrator for
-        # getting this module?
-        if not res_bin.ok or not res_desc.ok:
-            raise Exception(f'Fetching module \'{module["name"]}\' from \'{module["url"]}\' failed: {res_bin.content or res_desc.content}')
+        # Check that each request succeeded before continuing on.
+        if not res_bin.ok or not res_desc.ok or any(map(lambda x: not x.ok, res_others)):
+            # TODO: Tell which ones failed.
+            raise Exception(f'Fetching file for module \'{module["name"]}\' from \'{module["urls"]}\' failed')
 
         "Request for module by name"
         module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
@@ -508,15 +511,14 @@ def fetch_modules(modules):
         "Add module details to module config"
 
         # Add other listed files related to the module.
-        # FIXME Assuming only one url and that it is for the model.
-        for other_url in module["urls"]["other"]:
-            res_other = requests.get(other_url)
-            if not res_other.ok:
-                raise Exception(f'Fetching module \'{module["name"]}\' from \'{other_url}\' failed: {res_other.content}')
-            otherPath = wu.wasm_modules[module['name']].model_path
-            if not otherPath:
-                otherPath = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
-                wu.wasm_modules[module['name']].model_path = otherPath
-            otherPath.parent.mkdir(exist_ok=True, parents=True)
-            with open(otherPath, 'wb') as f:
+
+        for res_other in res_others:
+            # FIXME Assuming only one url and that it is for the model.
+            other_path = wu.wasm_modules[module['name']].model_path
+            if not other_path:
+                other_path = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
+                wu.wasm_modules[module['name']].model_path = other_path
+
+            other_path.parent.mkdir(exist_ok=True, parents=True)
+            with open(other_path, 'wb') as f:
                 f.write(res_other.content)
