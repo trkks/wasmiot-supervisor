@@ -4,6 +4,8 @@
 ARG VARIANT="3.10-bullseye"
 FROM mcr.microsoft.com/vscode/devcontainers/python:0-${VARIANT} AS base
 
+LABEL org.opencontainers.image.source="https://github.com/LiquidAI-project/wasmiot-supervisor" 
+
 WORKDIR /app
 
 # Copy needed files to app root for installing deps beforehand.
@@ -33,11 +35,4 @@ CMD ["python", "__main__.py"]
 
 FROM base AS vscode-devcontainer
 
-# [Choice] Node.js version: none, lts/*, 16, 14, 12, 10
-ARG NODE_VERSION="none"
-RUN if [ "${NODE_VERSION}" != "none" ]; then su vscode -c "umask 0002 && . /usr/local/share/nvm/nvm.sh && nvm install ${NODE_VERSION} 2>&1"; fi
-
 RUN su vscode -c "mkdir -p /home/vscode/.vscode-server/extensions"
-
-# [Optional] Uncomment this line to install global node packages.
-# RUN su vscode -c "source /usr/local/share/nvm/nvm.sh && npm install -g <your-package-here>" 2>&1
