@@ -16,7 +16,7 @@
 		}
 	},
 	// Put the devcontainer into network shared by orchestrator's devcontainer.
-	"runArgs": ["--network=wasmiot-net"],
+	"runArgs": ["--network=wasmiot-net", "--privileged"],
 	"containerEnv": {
 		// This is because the app is configured to be run from under the
 		// directory host_app/ but VSCode and Python extensions don't know this(?)
@@ -68,7 +68,8 @@
 
 	"mounts": [
 		// Mount to avoid re-installing vscode extensions.
-		"source=wasmiot-supervisor-vscode-extensions,target=/home/vscode/.vscode-server/extensions,type=volume"
+		"source=wasmiot-supervisor-vscode-extensions,target=/home/vscode/.vscode-server/extensions,type=volume",
+		"source=/dev/video0,target=/dev/video0,type=bind"
 	],
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
