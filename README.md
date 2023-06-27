@@ -74,3 +74,8 @@ created i.e., before starting the container run:
 ```
 docker network create wasmiot-net
 ```
+
+To build the devcontainer image manually, run:
+```
+docker build -t ghcr.io/liquidai-project/wasmiot-supervisor:devcontainer --target vscode-devcontainer .
+```
