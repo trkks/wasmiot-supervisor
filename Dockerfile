@@ -8,6 +8,8 @@ LABEL org.opencontainers.image.source="https://github.com/LiquidAI-project/wasmi
 
 WORKDIR /app
 
+ENV PYTHONUNBUFFERED 1
+
 # Copy needed files to app root for installing deps beforehand.
 COPY ["requirements.txt", "setup.py", "./"]
 
@@ -35,5 +37,7 @@ WORKDIR /app/host_app
 CMD ["python", "__main__.py"]
 
 FROM base AS vscode-devcontainer
+
+ENV PYTHONDONTWRITEBYTECODE 1
 
 RUN su vscode -c "mkdir -p /home/vscode/.vscode-server/extensions"
