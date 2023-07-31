@@ -188,7 +188,6 @@ def get_listening_address(app: Flask) -> Tuple[str, int]:
     server_address = get_sockaddr(host, int(port), address_family)
 
     return server_address
-
 @bp.route('/.well-known/wasmiot-device-description')
 def wasmiot_device_description():
     return jsonify(get_device_description())
@@ -196,6 +195,13 @@ def wasmiot_device_description():
 @bp.route('/.well-known/wot-thing-description')
 def thingi_description():
     return jsonify(get_wot_td())
+
+@bp.route('/health')
+def thingi_health():
+    import random
+    return jsonify({
+         "cpuUsage": random.random()
+    })
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>')
 def run_module_function(deployment_id, module_name = None, function_name = None):
