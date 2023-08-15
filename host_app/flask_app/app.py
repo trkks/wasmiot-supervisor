@@ -231,7 +231,7 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     try:
         # FIXME This very is ridiculous...
         resp_media_type, resp_obj = list(
-            module.description['openapi']['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
+            module.description['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
         )[0]
         return deployments[deployment_id].call_chain(res, resp_media_type, resp_obj.get("schema"))
     except ProgramCounterExceeded as err:
@@ -375,7 +375,7 @@ def run_ml_module(module_name = None):
     try:
         # FIXME This very is ridiculous...
         resp_media_type, resp_schema = list(
-            module.description['openapi']['paths'][f'/ml/{{module}}']['post']['responses']['200']['content'].items()
+            module.description['paths'][f'/ml/{{module}}']['post']['responses']['200']['content'].items()
         )[0]
         # TODO: Use the deployment-ID from the request.
         deployment_id = list(deployments.keys())[0]
