@@ -2,6 +2,7 @@
 ## Requirements
 - [Python3](https://www.python.org/downloads/)
 - Linux (for Windows users [WSL](https://learn.microsoft.com/en-us/windows/wsl/install))
+  - `apt install gcc` for installing `pywasm3`
 
 ### raspberry pi
 
@@ -23,9 +24,9 @@ Install requirements. You might want to install them in a [virtual environment](
 
 ```
 # Create
-python3 -m venv my-supervisor-venv
+python3 -m venv venv
 # Activate
-source my-supervisor-venv/bin/activate
+source venv/bin/activate
 ```
 
 Finally installing is done with:
@@ -55,12 +56,9 @@ The supervisor's logs in your terminal should show that a `GET` request was rece
 
 For testing the supervisor you need to provide it with a "deployment manifest" and the WebAssembly modules to run along with their descriptions.
 The modules can be found in the [wasmiot-modules repo](https://github.com/LiquidAI-project/wasmiot-modules) (see the link for build instructions).
-
 The simplest deployment to test is counting the Fibonacci sequence with the `fibo` module.
 
-### Command line
-
-After building the WebAssembly modules, start up a simple file server inside the `modules` directory:
+After building the WebAssembly modules, you can start up a simple file server inside the `modules` directory containing `.wasm` files in `wasm-binaries/` when the `build.sh` script is used:
 ```
 cd modules
 python3 -m http.server
@@ -99,48 +97,59 @@ Then on success, you can count the (four-byte representation of) 7th Fibonacci n
 ```bash
 curl localhost:5000/0/modules/fibo/fibo?iterations=7
 ```
-
-### Web GUI
-
-You need to upload to fibo module to [the orchestrator](https://github.com/LiquidAI-project/wasmiot-orchestrator) (see the link for installation), let's say with the name 'Fibo'. And
-make a deployment named for example 'fibo-dep' with call sequence
-'Fibo:fibo'.
-
-First you need to find out which device the package was sent to. This can
-be done by checking either the orchestrator logs or from the orchestrator
-web interface from the deployments page.
-
-If you are running the docker test environment, meaning the devices are
-just docker containers, you will then need to check which port the device
-is mapped to. You can do this by running
-```
-docker container list
-```
-
-Afterwards you can run the module via the supervisor REST-interface by
-issuing GET-request to the url
-```
-'\<host\>:\<port\>/modules/\<module name\>/\<function name\>?param1=\<integer number\>
-```
-which in the docker test environment case
-is 'localhost:\<port\>/modules/Fibo/fibo?param1=\<integer number\>'.
-You can just do this by accessing the URL with your browser and you should get json containing the resulting number as a response.
-
 ## Testing ML deployment
 
-You first need to deploy a wasm-module to the device from the orchestrator. As a test module you can use the example from [here](https://github.com/radu-matei/wasi-tensorflow-inference).
+As a test module you can use the example from [here](https://github.com/radu-matei/wasi-tensorflow-inference).
 That repository contains the code for the wasm-module (source in crates/wasi-mobilenet-inference pre-compiled binary in model/optimized-wasi.wasm) and the model file
 (in model/mobilenet_v2_1.4_224_frozen.pb).
 
-After deploying the module to the device, you need to supply the model file, which currently can't be done via orchestrator. Instead you can use curl, eg.:
+You need to provide both of these files for the supervisor to fetch like with the `fibo` module.
+
+### Without orchestrator
+Add the ML-module's files to where your Python HTTP-server (started in the `fibo` test) can serve them from, e.g.:
 ```
-curl -v -X POST -F model=@./model/mobilenet_v2_1.4_224_frozen.pb http://localhost:5000/ml/model/mobilenet
+cd modules
+curl -L https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/optimized-wasi.wasm > wasm-binaries/wasm32-wasi/ml.wasm
+curl -L https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/mobilenet_v2_1.4_224_frozen.pb > wasm-binaries/wasm32-wasi/ml.pb
 ```
-After which you can test the inference via curl, eg.:
+
+Now deploy the files with:
+```bash
+curl --header "Content-Type: application/json" --request POST --data '{
+        "deploymentId":"1",
+        "modules":[
+            {
+                "id":"1",
+                "name":"ml",
+                "urls":{
+                    "binary":"http://localhost:8000/wasm-binaries/wasm32-wasi/ml.wasm",
+                    "description":"http://localhost:8000/object-inference-open-api-description.json",
+                    "other":[
+                        "http://localhost:8000/wasm-binaries/wasm32-wasi/ml.pb"
+                    ]
+                }
+            }
+        ],
+        "instructions": [
+            {
+                "sequence": 0,
+                "to": null
+            }
+        ]
+    }' http://localhost:5000/deploy
 ```
-curl -v -X POST -F data=@./testdata/husky.jpeg http://localhost:5000/ml/mobilenet
+
+After which you can test the inference with some image file via curl, eg.:
 ```
-You can find a couple of test images in the wasi-inference repository in 'testdata'
+# Download a test image
+curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg > husky.jpeg
+# Send the image to supervisor and wait for it to return the classification
+curl -v -X POST -F data=@./husky.jpeg localhost:5000/ml/ml
+```
+
+The supervisor will again, aften some time, respond with a four-byte representation of a 32-bit integer, that will match the line number in [the labels file](https://github.com/radu-matei/wasi-tensorflow-inference/blob/master/model/labels.txt).
+
+You can find another test image in the [wasi-inference repository in 'testdata'](https://github.com/radu-matei/wasi-tensorflow-inference/tree/master/testdata).
 
 ## Devcontainer
 Use VSCode for starting in container. NOTE: Be sure the network it uses is
