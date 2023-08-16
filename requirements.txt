@@ -11,5 +11,6 @@ sentry-sdk[flask]
 opencv-python-headless
 
 pywasm3
+wasmtime
 
 -e .
