@@ -1,7 +1,17 @@
+"""
+This is a module :)
+"""
+
+from datetime import datetime
 import os
+import socket
 from pathlib import Path
+import queue
+import string
+import struct
+import threading
+
 import atexit
-import re
 from typing import Tuple
 from flask import Flask, Blueprint, jsonify, current_app, request, send_file
 from flask.helpers import get_debug_flag
@@ -9,18 +19,14 @@ from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
 from werkzeug.utils import secure_filename
 import logging
-import struct
-import string
 
 import requests
 from zeroconf import ServiceInfo, Zeroconf
-import socket
 
 import cv2
 import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
-#from sentry_sdk.integrations import RequestsIntegration
 
 import wasm_utils.wasm_utils as wu
 from wasm_utils.wasm3_api import _wasm_rt, _wasm_env
@@ -49,11 +55,17 @@ length in bytes of the memory to allocate and returns beginning address of the
 allocated block.
 """
 
+FILE_TYPES = [
+    "image/png",
+    "image/jpeg",
+    "image/jpg"
+]
+"""Types of "WebAssembly outputs" that are considered files in chaining
+requests."""
+
 bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
 logger = logging.getLogger(os.environ["FLASK_APP"])
-
-from flask import Flask
 
 deployments = {}
 """
@@ -61,6 +73,75 @@ Mapping of deployment-IDs to instructions for forwarding function results to
 other devices and calling their functions
 """
 
+request_history = []
+wasm_queue = queue.Queue()
+
+
+def do_wasm_work(deployment_id, module_name, function_name, do_chain=True):
+    """
+    Run a WebAssembly function and follow deployment instructions on what to
+    do with its output.
+
+    Return response of the possible call made or the raw result if chaining is
+    not required.
+    """
+    # Setup Wasm runtime.
+    module = wu.wasm_modules[module_name]
+    _wasm_rt.set(module.runtime)
+    _wasm_env.set(module.env)
+
+    # Get any parameters from get request and match them to needed types.
+    types = module.get_arg_types(function_name)
+    typed_params = [t(arg) for arg, t in zip(request.args.values(), types)]
+    res = module.run_function(function_name, typed_params)
+
+    if not do_chain:
+        return res
+
+    # Follow deployment instructions.
+    try:
+        next_call = deployments[deployment_id].call_chain(res, module.id, function_name)
+    except ProgramCounterExceeded as err:
+        return endpoint_failed(request, str(err))
+    except RequestFailed as err:
+        return endpoint_failed(request, "Check device conncetions: " + str(err))
+
+    if not next_call:
+        return res
+
+    # Do the next call, passing chain along and return immediately (i.e. the
+    # answer to current request should not block the whole chain).
+    headers = { "Content-Type": next_call.type }
+    if next_call.type in FILE_TYPES:
+        files = { 'data': open(next_call.data, 'rb') }
+    else:
+        data = next_call.data
+
+    response = getattr(requests, next_call.method)(
+        next_call.url,
+        timeout=120,
+        data=data,
+        files=files,
+        headers=headers,
+    )
+
+    request_history.append({
+        "work_id": f'{deployment_id}:{module_name}:{function_name}',
+        "request_send_timestamp": datetime.now(),
+        "response": response
+    })
+
+    return response
+
+def wasm_worker():
+    """Constantly try dequeueing work for using WebAssembly modules"""
+    while True:
+        item = wasm_queue.get()
+        do_wasm_work(*item)
+        wasm_queue.task_done()
+
+# Turn-on the worker thread.
+threading.Thread(target=wasm_worker, daemon=True).start()
 
 def create_app(*args, **kwargs) -> Flask:
     """
@@ -204,40 +285,21 @@ def thingi_health():
     })
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>')
-def run_module_function(deployment_id, module_name = None, function_name = None):
-    if not module_name or not function_name:
-        return jsonify({'result': 'not found'})
-
-    module = wu.wasm_modules[module_name]
-    _wasm_rt.set(module.runtime)
-    _wasm_env.set(module.env)
-
-    # Error if deployment-ID (TODO Or other access-control) does not check out.
-    if deployment_id != 'adhoc' and deployment_id not in deployments:
+def run_module_function(deployment_id, module_name, function_name):
+    """
+    Execute the function in WebAssembly module and act based on instructions
+    attached to the deployment of this call/execution.
+    """
+    if not (deployment_id in deployments or deployment_id == "adhoc"):
         return endpoint_failed(request, 'deployment does not exist', 404)
+    
+    # Passing 'adhoc' as the deployment allows running a function without
+    # following deployment instructions about call chaining.
+    if deployment_id == "adhoc":
+        return do_wasm_work(deployment_id, module_name, function_name, False)
 
-    #param = request.args.get('param', default=1, type=int)
-    #params = request.args.getlist('param')
-    types = module.get_arg_types(function_name)  # get argument types
-    params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
-    res = module.run_function(function_name, params)
-
-    # Return immediately if this request was purposefully made not in relation
-    # to an existing deployment.
-    if deployment_id == 'adhoc':
-        return jsonify({ 'result': res })
-
-    # TODO: Use a common error-handling function for all endpoints.
-    try:
-        # FIXME This very is ridiculous...
-        resp_media_type, resp_obj = list(
-            module.description['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
-        )[0]
-        return deployments[deployment_id].call_chain(res, resp_media_type, resp_obj.get("schema"))
-    except ProgramCounterExceeded as err:
-        return endpoint_failed(request, str(err))
-    except RequestFailed as err:
-        return endpoint_failed(request, "Check device conncetions: " + str(err))
+    # Send the needed "valid" data for worker thread to handle non-blockingly.
+    wasm_queue.put((deployment_id, module_name, function_name))
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
 def run_module_function_raw_input(module_name, function_name):
