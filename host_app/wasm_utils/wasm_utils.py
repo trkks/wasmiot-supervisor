@@ -181,23 +181,11 @@ def write_to_memory(address, bytes_data):
     except Exception as err:
         return f"Could not insert input data (length {len(bytes_data)}) into to WebAssembly memory at address ({address}): {err}"
 
-def read_from_memory(address, length_bytes, to_list=False):
+def read_from_memory(address, length_bytes):
     """
-    Read length_bytes amount of bytes from WebAssembly runtime's memory starting
-    from address
-
-    :return Tuple where the first item is the bytes inside in the requested
-    block of WebAssembly runtime's memory and the second item is None if the
-    read was successful and an error if not. 
+    Read and return length_bytes amount of bytes from WebAssembly runtime's
+    memory starting from address
     """
-    try:
-        wasm_memory = rt.get_memory(0)
-        block = wasm_memory[address:address + length_bytes]
-        bytes = block.tobytes()
-        #return block.tolist() if to_list else block.tobytes(), None
-        return block, None
-    except Exception as err:
-        return (
-            [],
-            f"Reading WebAssembly memory from address {address} with length {length_bytes} failed: {err}"
-        )
+    wasm_memory = rt.get_memory(0)
+    block = wasm_memory[address:address + length_bytes]
+    return block
