@@ -1,7 +1,7 @@
 """General interface for Wasm utilities."""
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeAlias
 
 ByteType: TypeAlias = bytes | bytearray
@@ -24,12 +24,14 @@ class WasmRuntime:
         """Load a module into the Wasm runtime."""
         raise NotImplementedError
 
-    def get_or_load_module(self, module: ModuleConfig) -> Optional[WasmModule]:
+    def get_or_load_module(self, module: Optional[ModuleConfig]) -> Optional[WasmModule]:
         """Get a module from the Wasm runtime, or load it if it is not found."""
-        module = self.modules.get(module.name)
         if module is None:
-            module = self.load_module(module)
-        return module
+            return None
+        wasm_module = self.modules.get(module.name)
+        if wasm_module is None:
+            wasm_module = self.load_module(module)
+        return wasm_module
 
     def read_from_memory(self, address: int, length: int) -> ByteType:
         """Read from the runtime memory and return the result.
@@ -45,6 +47,15 @@ class WasmRuntime:
         Return None on success or an error message on failure."""
         raise NotImplementedError
 
+    def get_function(self, function_name: str) -> Optional[WasmModule.FunctionType]:
+        """Get a function from the Wasm runtime. If the function is not found, return None."""
+        for _, module in self.modules.items():
+            function = module.get_function(function_name)
+            if function is not None:
+                print(f"Found function {function_name} in module {module.name}")
+                return function
+        return None
+
 
 class WasmModule:
     """Superclass for Wasm modules."""
@@ -55,7 +66,6 @@ class WasmModule:
         self._path = config.path
         self._runtime: WasmRuntime = runtime
         self._functions: Optional[List[str]] = None
-        self._ml_model: Optional[MLModel] = None
 
         self._load_module()
         self._link_remote_functions()
@@ -90,11 +100,6 @@ class WasmModule:
                 self._functions = self._get_all_functions()
         return self._functions
 
-    @property
-    def ml_model(self) -> Optional[MLModel]:
-        """Get the ML model of the Wasm module."""
-        return self._ml_model
-
     def get_function(self, function_name: str) -> Optional[FunctionType]:
         """Get a function from the Wasm module. If the function is not found, return None."""
         raise NotImplementedError
@@ -115,12 +120,12 @@ class WasmModule:
     #     """Run a function from the Wasm module with data and return the transformed data."""
     #     raise NotImplementedError
 
-    def upload_ml_model(self, ml_model: MLModel) -> Optional[Tuple[int, int]]:
+    def upload_ml_model(self, ml_model: MLModel) -> Tuple[Optional[int], Optional[int]]:
         """Upload a ML model to the Wasm module.
-        Return (memory pointer, size) pair of the model on success, None on failure."""
+        Return (memory pointer, size) pair of the model on success, None used on failure."""
         raise NotImplementedError
 
-    def run_ml_inference(self, data: ByteType) -> Any:
+    def run_ml_inference(self, ml_model: MLModel, data: ByteType) -> Any:
         """Run inference using the given model and data, and return the result."""
         raise NotImplementedError
 
@@ -138,7 +143,8 @@ class ModuleConfig:
     """Dataclass for module name and file location."""
     name: str
     path: str
-    description: Any = {}
+    description: Any = field(default_factory=dict)
+    ml_model: Optional[MLModel] = None
 
 
 @dataclass

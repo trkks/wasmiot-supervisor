@@ -22,9 +22,7 @@ import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 #from sentry_sdk.integrations import RequestsIntegration
 
-# import wasm_utils.wasm_utils as wu
-# from wasm_utils.wasm3_api import _wasm_rt, _wasm_env
-from wasm_utils.wasm import wasm_modules, wasm_runtime, ModuleConfig, MLModel, WasmModuleType
+from wasm_utils.wasm import wasm_modules, wasm_runtime, ModuleConfig, MLModel
 
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
@@ -207,10 +205,13 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     if not module_name or not function_name:
         return jsonify({'result': 'not found'})
 
-    module = module_name
-    # module = wu.wasm_modules[module_name]
-    # _wasm_rt.set(module.runtime)
-    # _wasm_env.set(module.env)
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
+
+    module = wasm_runtime.get_or_load_module(module_config)
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
 
     # Error if deployment-ID (TODO Or other access-control) does not check out.
     if deployment_id != 'adhoc' and deployment_id not in deployments:
@@ -231,7 +232,7 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     try:
         # FIXME This very is ridiculous...
         resp_media_type, resp_obj = list(
-            module.description['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
+            module_config.description['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
         )[0]
         return deployments[deployment_id].call_chain(res, resp_media_type, resp_obj.get("schema"))
     except ProgramCounterExceeded as err:
@@ -359,25 +360,26 @@ def run_ml_module(module_name = None):
     if not module_name:
         return jsonify({'status': 'error', 'result': 'module not found'})
 
-    module_config = wasm_modules[module_name]
-    module = wasm_runtime.get_or_load_module(module_config)
-    #wu.rt = module.runtime
-    #wu.env = module.env
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
 
-    # _wasm_rt.set(module.runtime)
-    # _wasm_env.set(module.env)
+    module = wasm_runtime.get_or_load_module(module_config)
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
 
     file = request.files['data']
     if not file:
         return jsonify({'status': 'error', 'result': "file 'data' not in request"})
+    data = file.read()
 
-    res = module.run_ml_inference(file)
+    res = module.run_ml_inference(module_config.ml_model, data)
 
     # TODO: Use a common error-handling function for all endpoints.
     try:
         # FIXME This very is ridiculous...
         resp_media_type, resp_schema = list(
-            module.description['paths'][f'/ml/{{module}}']['post']['responses']['200']['content'].items()
+            module_config.description['paths'][f'/ml/{{module}}']['post']['responses']['200']['content'].items()
         )[0]
         # TODO: Use the deployment-ID from the request.
         deployment_id = list(deployments.keys())[0]
@@ -406,11 +408,19 @@ def upload_ml_model(module_name = None):
     file.save(path)
 
     model = MLModel(path)
-    module_config = wasm_modules[module_name]
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
+    module_config.ml_model = model
+
     module = wasm_runtime.get_or_load_module(module_config)
-    module.upload_ml_model(model)
-    # wu.wasm_modules[module_name].model_path = path
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
+
     return jsonify({'status': 'success'})
+
+# TODO: figure out how to refactor these image methods
+# Question: What is data_ptr, and where is it set?
 
 # @bp.route('/img/<module_name>/<function_name>', methods=['POST'])
 # def run_img_function(module_name = None, function_name = None):
@@ -532,14 +542,13 @@ def fetch_modules(modules):
 
         # Add other listed files related to the module.
 
-        # TODO: something could be missing here (after Wasm modifications)
         for res_other in res_others:
             # FIXME Assuming only one url and that it is for the model.
-            other_path = wasm_modules[module['name']].path
-            if not other_path:
-                other_path = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
-                wasm_modules[module['name']].path = other_path
+            other_path = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
 
             other_path.parent.mkdir(exist_ok=True, parents=True)
             with open(other_path, 'wb') as f:
                 f.write(res_other.content)
+
+            # update the module configuration with the model path
+            new_module_config.ml_model = MLModel(other_path)

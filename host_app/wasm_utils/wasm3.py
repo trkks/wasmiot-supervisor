@@ -24,6 +24,16 @@ class Wasm3Runtime(WasmRuntime):
         self._functions: Optional[Dict[str, Wasm3Module]] = None
 
     @property
+    def env(self) -> wasm3.Environment:
+        """Get the Wasm3 environment."""
+        return self._env
+
+    @property
+    def runtime(self) -> wasm3.Runtime:
+        """Get the Wasm3 runtime."""
+        return self._runtime
+
+    @property
     def modules(self) -> Dict[str, Wasm3Module]:
         """Get the modules loaded in the Wasm3 runtime."""
         return self._modules
@@ -41,13 +51,18 @@ class Wasm3Runtime(WasmRuntime):
 
     def load_module(self, module: ModuleConfig) -> Optional[Wasm3Module]:
         """Load a module into the Wasm runtime."""
-        if module.name in self.modules:
-            print(f"Module {module.name} already loaded!")
-            return None
+        try:
+            # NOTE: This commented approach might cause memory errors
+            if module.name in self.modules:
+                print(f"Module {module.name} already loaded!")
+                return self.modules[module.name]
 
-        module = Wasm3Module(module, self, self._env)
-        self._modules[module.name] = module
-        return module
+            module = Wasm3Module(module, self)
+            self._modules[module.name] = module
+            return module
+        except AttributeError as error:
+            print(error)
+            return None
 
     def read_from_memory(self, address: int, length: int) -> Tuple[bytes, Optional[str]]:
         """Read from the runtime memory and return the result.
@@ -59,7 +74,7 @@ class Wasm3Runtime(WasmRuntime):
         try:
             wasm_memory = self._runtime.get_memory(0)
             block = wasm_memory[address:address + length]
-            print(f"Read {len(block)} bytes from memory at address {address} : {type(block)}")
+            print(f"Read {len(block)} bytes from memory at address {address}")
             return block, None
         except RuntimeError as error:
             return (
@@ -74,7 +89,7 @@ class Wasm3Runtime(WasmRuntime):
         """Write to the runtime memory.
         Return None on success or an error message on failure."""
         try:
-            wasm_memory = self._runtime.get_memory(0)
+            wasm_memory = self.runtime.get_memory(0)
             wasm_memory[address:address + len(bytes_data)] = bytes_data
             return None
         except RuntimeError as error:
@@ -86,11 +101,8 @@ class Wasm3Runtime(WasmRuntime):
 
 class Wasm3Module(WasmModule):
     """Wasm3 module class."""
-    def __init__(self, config: ModuleConfig, runtime: Wasm3Runtime,
-                 environment: wasm3.Environment) -> None:
+    def __init__(self, config: ModuleConfig, runtime: Wasm3Runtime) -> None:
         super().__init__(config, runtime)
-        self._environment: wasm3.Environment = environment
-        self._ml_model_address: Optional[Tuple[int, int]] = None
 
     def get_function(self, function_name: str) -> Optional[wasm3.Function]:
         """Get a function from the Wasm module. If the function is not found, return None."""
@@ -99,7 +111,9 @@ class Wasm3Module(WasmModule):
             return None
 
         try:
-            return self.runtime.find_function(function_name)
+            func = self.runtime.runtime.find_function(function_name)
+            print(f"Found function '{function_name}' in module '{self.name}'")
+            return func
         except RuntimeError:
             print(f"Function '{function_name}' not found!")
             return None
@@ -113,26 +127,31 @@ class Wasm3Module(WasmModule):
 
     def get_arg_types(self, function_name: str) -> List[type]:
         """Get the argument types of a function from the Wasm module."""
-        func = self.runtime.find_function(function_name)
+        func = self.runtime.runtime.find_function(function_name)
         if func is None:
             return []
-        return list(map(lambda x: arg_types[x], func.arg_types))
+        return [
+            arg_types[x]
+            for x in func.arg_types
+        ]
 
     def run_function(self, function_name: str, params: List[Any]) -> Any:
         """Run a function from the Wasm module and return the result."""
         func = self.get_function(function_name)
         if func is None:
             return None
+
+        print(f"Running function '{function_name}' with params: {params}")
         if not params:
             return func()
         return func(*params)
 
-    def upload_data(self, data: bytes, alloc_function: str) -> Optional[Tuple[int, int]]:
+    def upload_data(self, data: bytes, alloc_function: str) -> Tuple[int | None, int | None]:
         """Upload data to the Wasm module.
-        Return (memory pointer, size) pair of the data on success, None on failure."""
+        Return (memory pointer, size) pair of the data on success, None used on failure."""
         if self.runtime is None:
             print("Runtime not set!")
-            return None
+            return None, None
 
         try:
             data_size = len(data)
@@ -143,59 +162,61 @@ class Wasm3Module(WasmModule):
         except RuntimeError as error:
             print("Error when trying to upload data to Wasm module!")
             print(error)
-            return None
+            return None, None
 
-    def upload_data_file(self, data_file: str, alloc_function: str) -> Optional[Tuple[int, int]]:
+    def upload_data_file(self, data_file: str,
+                         alloc_function_name: str) -> Tuple[int | None, int | None]:
         """Upload data from file to the Wasm module.
-        Return (memory pointer, size) pair of the data on success, None on failure."""
+        Return (memory pointer, size) pair of the data on success, None used on failure."""
         try:
             with open(data_file, mode="rb") as file_handle:
                 data = file_handle.read()
-            return self.upload_data(data, alloc_function)
+            return self.upload_data(data, alloc_function_name)
 
         except OSError as error:
             print("Error when trying to load data from file!")
             print(error)
-            return None
+            return None, None
 
-    def upload_ml_model(self, ml_model: Optional[MLModel]) -> Optional[Tuple[int, int]]:
+    def upload_ml_model(self, ml_model: Optional[MLModel]) -> Tuple[int | None, int | None]:
         """Upload a ML model to the Wasm module.
-        Return (memory pointer, size) pair of the model on success, None on failure."""
+        Return (memory pointer, size) pair of the model on success, None used on failure."""
         if ml_model is None:
             print("No ML model given!")
-            return None
-        if self.ml_model == ml_model and self._ml_model_address is not None:
-            print("Model already uploaded!")
-            # should probably check that the memory actually contains the correct model
-            return self._ml_model_address
+            return None, None
 
-        self._ml_model = ml_model
-        self._ml_model_address = self.upload_data_file(ml_model.path, ml_model.alloc_function_name)
-        return self._ml_model_address
+        return self.upload_data_file(ml_model.path, ml_model.alloc_function_name)
 
-    def run_ml_inference(self, data: bytes) -> Any:
+    def run_ml_inference(self, ml_model: MLModel, data: bytes) -> Any:
         """Run inference using the given model and data, and return the result."""
         try:
-            model_pointer, model_size = self.upload_ml_model(self.ml_model)
-            data_pointer, data_size = self.upload_data(data, self.ml_model.alloc_function)
+            model_pointer, model_size = self.upload_ml_model(ml_model)
+            if model_pointer is None or model_size is None:
+                print("Could not upload model!")
+                return None
+            data_pointer, data_size = self.upload_data(data, ml_model.alloc_function_name)
+            if data_pointer is None or data_size is None:
+                print("Could not upload data!")
+                return None
+            infer_function = self.get_function(ml_model.infer_function_name)
+            if infer_function is None:
+                print("Could not find inference function!")
+                return None
 
-            infer_function = self.get_function(self.ml_model.infer_function_name)
             result = infer_function(model_pointer, model_size, data_pointer, data_size)
-        except (TypeError, RuntimeError) as error:
-            if isinstance(error, TypeError):
-                print("Error while trying to upload model and data to Wasm module!")
-            else:
-                print(error)
+            print(f"Inference result: {result}")
+            return result
+
+        except RuntimeError as error:
+            print(error)
             return None
-        print("Inference result:", result)
-        return result
 
     def _load_module(self) -> None:
         """Load the Wasm module into the Wasm runtime."""
         try:
             with open(self.path, mode="rb") as module_file:
-                self._instance = self._environment.parse_module(module_file.read())
-            self.runtime.load(self._instance)
+                self._instance = self.runtime.env.parse_module(module_file.read())
+            self.runtime.runtime.load(self._instance)
             self._link_remote_functions()
         except RuntimeError as error:
             print(error)

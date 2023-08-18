@@ -14,7 +14,7 @@ import numpy as np
 import requests
 from flask import jsonify
 
-import wasm_utils.wasm_utils as wu
+from wasm_utils.wasm import wasm_runtime
 
 
 WASM_MEM_IMG_SHAPE = (480, 640, 3)
@@ -66,7 +66,7 @@ class Deployment:
             return handle_sub_request(target, parsed_result, func_out_media_type)
         else:
             return return_immediately(parsed_result, func_out_media_type)
-             
+
 def parse_func_result(func_result, expected_media_type, expected_schema):
     '''
     Interpret the result of a function call based on the function's OpenAPI
@@ -82,11 +82,14 @@ def parse_func_result(func_result, expected_media_type, expected_schema):
         # Read the constant sized image from memory.
         # FIXME Assuming there is this function that gives the buffer address
         # found in the module.
-        img_address = wu.rt.find_function('get_img_ptr')()
+        img_ptr_function = wasm_runtime.get_function('get_img_ptr')
+        if img_ptr_function is None:
+            raise RuntimeError(f'Could not find function "get_img_ptr"')
+        img_address = img_ptr_function()
         # FIXME Assuming the buffer size is according to this constant
         # shape.
         data_len = prod(WASM_MEM_IMG_SHAPE)
-        img_bytes, err = wu.read_from_memory(img_address, data_len, to_list=True)
+        img_bytes, err = wasm_runtime.read_from_memory(img_address, data_len)
         if err:
             raise RuntimeError(f'Could not read image from memory: {err}')
         # Store raw bytes for now.
@@ -162,7 +165,7 @@ def handle_sub_request(target, input_value, input_type):
     # TODO: handle different response codes based on OpenAPI description.
     if response.status_code != 200:
         raise RequestFailed(f'Bad status code {response.status_code}')
-    
+
     # From:
     # https://stackoverflow.com/questions/19568950/return-a-requests-response-object-from-flask
     return response.content, response.status_code, response.headers.items()
