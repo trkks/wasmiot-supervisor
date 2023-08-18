@@ -33,7 +33,8 @@ class WasmRuntime:
             wasm_module = self.load_module(module)
         return wasm_module
 
-    def read_from_memory(self, address: int, length: int) -> ByteType:
+    def read_from_memory(self, address: int, length: int, module_name: Optional[str] = None
+    ) -> ByteType:
         """Read from the runtime memory and return the result.
 
         :return Tuple where the first item is the bytes inside in the requested
@@ -42,18 +43,20 @@ class WasmRuntime:
         """
         raise NotImplementedError
 
-    def write_to_memory(self, address: int, bytes_data: ByteType) -> Optional[str]:
+    def write_to_memory(self, address: int, bytes_data: ByteType, module_name: Optional[str] = None
+    ) -> Optional[str]:
         """Write to the runtime memory.
         Return None on success or an error message on failure."""
         raise NotImplementedError
 
-    def get_function(self, function_name: str) -> Optional[WasmModule.FunctionType]:
-        """Get a function from the Wasm runtime. If the function is not found, return None."""
+    def run_function(self, function_name: str) -> Optional[Any]:
+        """Runs a function in the Wasm runtime.
+        If the function is not found, return None. Otherwise, returns the function result."""
         for _, module in self.modules.items():
-            function = module.get_function(function_name)
+            function = module._get_function(function_name)  # pylint: disable=protected-access
             if function is not None:
                 print(f"Found function {function_name} in module {module.name}")
-                return function
+                return module.run_function(function_name)
         return None
 
 
@@ -100,7 +103,7 @@ class WasmModule:
                 self._functions = self._get_all_functions()
         return self._functions
 
-    def get_function(self, function_name: str) -> Optional[FunctionType]:
+    def _get_function(self, function_name: str) -> Optional[FunctionType]:
         """Get a function from the Wasm module. If the function is not found, return None."""
         raise NotImplementedError
 

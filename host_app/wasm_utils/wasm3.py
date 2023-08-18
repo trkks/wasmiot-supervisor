@@ -56,14 +56,15 @@ class Wasm3Runtime(WasmRuntime):
                 print(f"Module {module.name} already loaded!")
                 return self.modules[module.name]
 
-            module = Wasm3Module(module, self)
-            self._modules[module.name] = module
-            return module
+            wasm_module = Wasm3Module(module, self)
+            self._modules[module.name] = wasm_module
+            return wasm_module
         except AttributeError as error:
             print(error)
             return None
 
-    def read_from_memory(self, address: int, length: int) -> Tuple[bytes, Optional[str]]:
+    def read_from_memory(self, address: int, length: int, module_name: Optional[str] = None
+    ) -> Tuple[bytes, Optional[str]]:
         """Read from the runtime memory and return the result.
 
         :return Tuple where the first item is the bytes inside in the requested
@@ -84,7 +85,8 @@ class Wasm3Runtime(WasmRuntime):
                 )
             )
 
-    def write_to_memory(self, address: int, bytes_data: bytes) -> Optional[str]:
+    def write_to_memory(self, address: int, bytes_data: bytes, module_name: Optional[str] = None
+    ) -> Optional[str]:
         """Write to the runtime memory.
         Return None on success or an error message on failure."""
         try:
@@ -103,7 +105,7 @@ class Wasm3Module(WasmModule):
     def __init__(self, config: ModuleConfig, runtime: Wasm3Runtime) -> None:
         super().__init__(config, runtime)
 
-    def get_function(self, function_name: str) -> Optional[wasm3.Function]:
+    def _get_function(self, function_name: str) -> Optional[wasm3.Function]:
         """Get a function from the Wasm module. If the function is not found, return None."""
         if self.runtime is None:
             print("Runtime not set!")
@@ -136,7 +138,7 @@ class Wasm3Module(WasmModule):
 
     def run_function(self, function_name: str, params: List[Any]) -> Any:
         """Run a function from the Wasm module and return the result."""
-        func = self.get_function(function_name)
+        func = self._get_function(function_name)
         if func is None:
             return None
 
@@ -197,12 +199,15 @@ class Wasm3Module(WasmModule):
             if data_pointer is None or data_size is None:
                 print("Could not upload data!")
                 return None
-            infer_function = self.get_function(ml_model.infer_function_name)
+            infer_function = self._get_function(ml_model.infer_function_name)
             if infer_function is None:
                 print("Could not find inference function!")
                 return None
 
-            result = infer_function(model_pointer, model_size, data_pointer, data_size)
+            result = self.run_function(
+                function_name=ml_model.infer_function_name,
+                params=[model_pointer, model_size, data_pointer, data_size]
+            )
             print(f"Inference result: {result}")
             return result
 

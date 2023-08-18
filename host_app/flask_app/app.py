@@ -313,7 +313,7 @@ def run_module_function_raw_input(module_name, function_name):
     # Get the one unsigned int (4-byte) as little-endian like the Wasm memory
     # should be according to:
     # https://webassembly.org/docs/portability/
-    output_len_data, read_err = wasm_runtime.read_from_memory(output_len_ptr, OUTPUT_LENGTH_BYTES)
+    output_len_data, read_err = wasm_runtime.read_from_memory(output_len_ptr, OUTPUT_LENGTH_BYTES, module_name)
     if read_err is not None:
         return endpoint_failed(request, read_err)
 
@@ -332,7 +332,7 @@ def run_module_function_raw_input(module_name, function_name):
 
     # Read result from memory and pass forward TODO: Follow the deployment
     # sequence and instructions.
-    output_data, read_err = wasm_runtime.read_from_memory(output_ptr, output_len)
+    output_data, read_err = wasm_runtime.read_from_memory(output_ptr, output_len, module_name)
     if read_err is not None:
         return endpoint_failed(request, read_err)
 

@@ -82,10 +82,7 @@ def parse_func_result(func_result, expected_media_type, expected_schema):
         # Read the constant sized image from memory.
         # FIXME Assuming there is this function that gives the buffer address
         # found in the module.
-        img_ptr_function = wasm_runtime.get_function('get_img_ptr')
-        if img_ptr_function is None:
-            raise RuntimeError(f'Could not find function "get_img_ptr"')
-        img_address = img_ptr_function()
+        img_address = wasm_runtime.run_function('get_img_ptr')
         # FIXME Assuming the buffer size is according to this constant
         # shape.
         data_len = prod(WASM_MEM_IMG_SHAPE)
