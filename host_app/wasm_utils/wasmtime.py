@@ -1,7 +1,7 @@
 """Wasmtime Python bindings."""
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from wasmtime import (
     Config, Engine, Func, FuncType, Instance, Linker, Memory, Module,
@@ -20,6 +20,7 @@ SERIALIZED_MODULE_POSTFIX = ".SERIALIZED.wasm"
 class WasmtimeRuntime(WasmRuntime):
     """Wasmtime runtime class."""
     def __init__(self) -> None:
+        super().__init__()
         self._engine = Engine(Config())
         self._store = Store(self._engine)
         self._linker = Linker(self._engine)
@@ -28,9 +29,6 @@ class WasmtimeRuntime(WasmRuntime):
         self._wasi.inherit_stdout()
         self._wasi.inherit_env()
         self._store.set_wasi(self._wasi)
-
-        self._modules: Dict[str, WasmtimeModule] = {}
-        self._functions: Optional[Dict[str, WasmtimeModule]] = None
 
         self._link_remote_functions()
 
@@ -48,22 +46,6 @@ class WasmtimeRuntime(WasmRuntime):
     def linker(self) -> Linker:
         """Get the Wasmtime linker."""
         return self._linker
-
-    @property
-    def modules(self) -> Dict[str, WasmtimeModule]:
-        """Get the modules loaded in the Wasmtime runtime."""
-        return self._modules
-
-    @property
-    def functions(self) -> Dict[str, WasmtimeModule]:
-        """Get the functions loaded in the Wasm runtime and their corresponding modules."""
-        if self._functions is None:
-            self._functions = {}
-            for _, module in self._modules.items():
-                for function_name in module.functions:
-                    self._functions[function_name] = module
-
-        return self._functions
 
     def load_module(self, module: ModuleConfig) -> Optional[WasmtimeModule]:
         """Load a module into the Wasm runtime."""
@@ -233,70 +215,6 @@ class WasmtimeModule(WasmModule):
         if not params:
             return func(self.runtime.store)
         return func(self.runtime.store, *params)
-
-    def upload_data(self, data: bytes, alloc_function: str) -> Tuple[int | None, int | None]:
-        """Upload data to the Wasm module.
-        Return (memory pointer, size) pair of the data on success, None used on failure."""
-        if self.runtime is None:
-            print("Runtime not set!")
-            return None, None
-
-        try:
-            data_size = len(data)
-            data_pointer = self.run_function(alloc_function, [data_size])
-            self.runtime.write_to_memory(data_pointer, data)
-            return (data_pointer, data_size)
-
-        except RuntimeError as error:
-            print("Error when trying to upload data to Wasm module!")
-            print(error)
-            return None, None
-
-    def upload_data_file(self, data_file: str,
-                         alloc_function_name: str) -> Tuple[int | None, int | None]:
-        """Upload data from file to the Wasm module.
-        Return (memory pointer, size) pair of the data on success, None used on failure."""
-        try:
-            with open(data_file, mode="rb") as file_handle:
-                data = file_handle.read()
-            return self.upload_data(data, alloc_function_name)
-
-        except OSError as error:
-            print("Error when trying to load data from file!")
-            print(error)
-            return None, None
-
-    def upload_ml_model(self, ml_model: Optional[MLModel]) -> Tuple[int | None, int | None]:
-        """Upload a ML model to the Wasm module.
-        Return (memory pointer, size) pair of the model on success, None used on failure."""
-        if ml_model is None:
-            print("No ML model given!")
-            return None, None
-
-        return self.upload_data_file(ml_model.path, ml_model.alloc_function_name)
-
-    def run_ml_inference(self, ml_model: MLModel, data: bytes) -> Any:
-        """Run inference using the given model and data, and return the result."""
-        try:
-            model_pointer, model_size = self.upload_ml_model(ml_model)
-            if model_pointer is None or model_size is None:
-                print("Could not upload model!")
-                return None
-            data_pointer, data_size = self.upload_data(data, ml_model.alloc_function_name)
-            if data_pointer is None or data_size is None:
-                print("Could not upload data!")
-                return None
-
-            result = self.run_function(
-                function_name=ml_model.infer_function_name,
-                params=[model_pointer, model_size, data_pointer, data_size]
-            )
-            print(f"Inference result: {result}")
-            return result
-
-        except RuntimeError as error:
-            print(error)
-            return None
 
     def _load_module(self) -> None:
         """Load the Wasm module into the Wasm runtime."""
