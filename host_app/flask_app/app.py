@@ -22,7 +22,8 @@ import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 #from sentry_sdk.integrations import RequestsIntegration
 
-from wasm_utils.wasm import wasm_modules, wasm_runtime, ModuleConfig, MLModel
+from wasm_utils.wasm import wasm_modules, wasm_runtime
+from wasm_utils.wasm_api import MLModel, ModuleConfig
 
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
