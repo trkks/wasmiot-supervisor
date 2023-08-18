@@ -52,7 +52,6 @@ class Wasm3Runtime(WasmRuntime):
     def load_module(self, module: ModuleConfig) -> Optional[Wasm3Module]:
         """Load a module into the Wasm runtime."""
         try:
-            # NOTE: This commented approach might cause memory errors
             if module.name in self.modules:
                 print(f"Module {module.name} already loaded!")
                 return self.modules[module.name]
