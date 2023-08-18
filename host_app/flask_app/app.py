@@ -3,6 +3,8 @@ This is a module :)
 """
 
 from datetime import datetime
+from dataclasses import dataclass
+import logging
 import os
 import socket
 from pathlib import Path
@@ -18,7 +20,6 @@ from flask.helpers import get_debug_flag
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
 from werkzeug.utils import secure_filename
-import logging
 
 import requests
 from zeroconf import ServiceInfo, Zeroconf
@@ -33,7 +34,7 @@ from wasm_utils.wasm3_api import _wasm_rt, _wasm_env
 
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
-from utils.deployment import Deployment, ProgramCounterExceeded, RequestFailed
+from utils.deployment import Deployment, CallData, ProgramCounterExceeded, RequestFailed
 
 
 MODULE_DIRECTORY = '../modules'
@@ -63,6 +64,12 @@ FILE_TYPES = [
 """Types of "WebAssembly outputs" that are considered files in chaining
 requests."""
 
+@dataclass
+class FetchFailures(Exception):
+    """Raised when fetching modules or their attached files fails"""
+    errors: list[requests.Response]
+
+
 bp = Blueprint('thingi', os.environ["FLASK_APP"])
 
 logger = logging.getLogger(os.environ["FLASK_APP"])
@@ -77,7 +84,7 @@ request_history = []
 wasm_queue = queue.Queue()
 
 
-def do_wasm_work(deployment_id, module_name, function_name, do_chain=True):
+def do_wasm_work(deployment_id, module_name, function_name, request_args, do_chain=True):
     """
     Run a WebAssembly function and follow deployment instructions on what to
     do with its output.
@@ -92,7 +99,7 @@ def do_wasm_work(deployment_id, module_name, function_name, do_chain=True):
 
     # Get any parameters from get request and match them to needed types.
     types = module.get_arg_types(function_name)
-    typed_params = [t(arg) for arg, t in zip(request.args.values(), types)]
+    typed_params = [t(arg) for arg, t in zip(request_args.values(), types)]
     res = module.run_function(function_name, typed_params)
 
     if not do_chain:
@@ -100,18 +107,18 @@ def do_wasm_work(deployment_id, module_name, function_name, do_chain=True):
 
     # Follow deployment instructions.
     try:
-        next_call = deployments[deployment_id].call_chain(res, module.id, function_name)
-    except ProgramCounterExceeded as err:
-        return endpoint_failed(request, str(err))
+        call_chain_result = deployments[deployment_id].call_chain(res, module.id, function_name)
     except RequestFailed as err:
-        return endpoint_failed(request, "Check device conncetions: " + str(err))
+        print("Error: Check device conncetions: ", err)
 
-    if not next_call:
-        return res
+    if call_chain_result is not CallData:
+        return call_chain_result
+
+    next_call = call_chain_result
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not block the whole chain).
-    headers = { "Content-Type": next_call.type }
+    headers = { "Content-Type": call_chain_result.type }
     if next_call.type in FILE_TYPES:
         files = { 'data': open(next_call.data, 'rb') }
     else:
@@ -125,19 +132,20 @@ def do_wasm_work(deployment_id, module_name, function_name, do_chain=True):
         headers=headers,
     )
 
-    request_history.append({
-        "work_id": f'{deployment_id}:{module_name}:{function_name}',
-        "request_send_timestamp": datetime.now(),
-        "response": response
-    })
-
     return response
 
 def wasm_worker():
     """Constantly try dequeueing work for using WebAssembly modules"""
     while True:
-        item = wasm_queue.get()
-        do_wasm_work(*item)
+        deployment_id, module_name, function_name, the_rest = wasm_queue.get()
+        work_queued_at = datetime.now()
+        result = do_wasm_work(deployment_id, module_name, function_name, the_rest)
+        request_history.append({
+            "work_id": f'{deployment_id}:{module_name}:{function_name}',
+            "work_queued_at": work_queued_at,
+            "result": result
+        })
+
         wasm_queue.task_done()
 
 # Turn-on the worker thread.
@@ -269,43 +277,54 @@ def get_listening_address(app: Flask) -> Tuple[str, int]:
     server_address = get_sockaddr(host, int(port), address_family)
 
     return server_address
+
 @bp.route('/.well-known/wasmiot-device-description')
 def wasmiot_device_description():
+    '''Return the device description containing host functions in JSON'''
     return jsonify(get_device_description())
 
 @bp.route('/.well-known/wot-thing-description')
 def thingi_description():
+    '''Return the Web of Things thing description in JSON'''
     return jsonify(get_wot_td())
 
 @bp.route('/health')
 def thingi_health():
+    '''Return a report of the current health status of this thing'''
     import random
     return jsonify({
          "cpuUsage": random.random()
     })
 
+@bp.route('/request-logs')
+def request_logs():
+    '''Return a list of results from previous calls'''
+    return jsonify(request_history)
+
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>')
 def run_module_function(deployment_id, module_name, function_name):
-    """
+    '''
     Execute the function in WebAssembly module and act based on instructions
     attached to the deployment of this call/execution.
-    """
+    '''
     if not (deployment_id in deployments or deployment_id == "adhoc"):
         return endpoint_failed(request, 'deployment does not exist', 404)
-    
+
     # Passing 'adhoc' as the deployment allows running a function without
     # following deployment instructions about call chaining.
-    if deployment_id == "adhoc":
-        return do_wasm_work(deployment_id, module_name, function_name, False)
+    if deployment_id == 'adhoc':
+        return do_wasm_work(deployment_id, module_name, function_name, request.args, False)
 
     # Send the needed "valid" data for worker thread to handle non-blockingly.
-    wasm_queue.put((deployment_id, module_name, function_name))
+    wasm_queue.put((deployment_id, module_name, function_name, request.args))
+
+    return jsonify({ 'status': 'queued' })
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
 def run_module_function_raw_input(module_name, function_name):
     """
     Run a Wasm function from a module operating on Wasm-runtime's memory.
-    
+
     The function's input arguments and output is passed and read by indexing
     into Wasm-runtime memory much like described in
     https://radu-matei.com/blog/practical-guide-to-wasm-memory/.
@@ -447,8 +466,6 @@ def run_ml_module(module_name = None):
     except Exception as err:
         return endpoint_failed(request, str(err))
 
-
-
 @bp.route('/ml/model/<module_name>', methods=['POST'])
 def upload_ml_model(module_name = None):
     """Model comes as 'model' file in request file attribute"""
@@ -458,7 +475,7 @@ def upload_ml_model(module_name = None):
     file = request.files['model']
     if not file:
         return jsonify({'status': 'error', 'result': "file 'model' not in request"})
-    
+
     path = wu.wasm_modules[module_name].model_path
     if not path:
         path = Path(current_app.config['PARAMS_FOLDER']) / module_name / 'model'
@@ -514,17 +531,25 @@ def get_deployment():
     if not data:
         return jsonify({'message': 'Non-existent or malformed deployment data'})
     modules = data['modules']
-    deployments[data["deploymentId"]] = Deployment(data["instructions"])
 
     if not modules:
         return jsonify({'message': 'No modules listed'})
 
     try:
         fetch_modules(modules)
-    except Exception as err:
-        msg = f"Fetching modules failed: {err}"
-        print(msg)
-        return endpoint_failed(request, msg)
+    except FetchFailures as err:
+        print(err)
+        return endpoint_failed(
+            request,
+            msg=f'{len(err.errors)} fetch failures',
+            status_code=500,
+            errors=err.errors
+        )
+
+    deployments[data["deploymentId"]] = Deployment(
+        data["instructions"],
+        { m["id"]: wu.wasm_modules[m["name"]] for m in modules }
+    )
 
     # If the fetching did not fail (that is, crash), return success.
     return jsonify({'status': 'success'})
@@ -555,20 +580,25 @@ def upload_params():
 def fetch_modules(modules):
     """
     Fetch listed Wasm-modules and save them and their details.
-    :modules: list of names of modules to download
+    :modules: list of structs of modules to download
     """
     for module in modules:
         # Make all the requests at once.
-        res_bin = requests.get(module["urls"]["binary"])
-        res_desc = requests.get(module["urls"]["description"])
-        res_others = [requests.get(x) for x in module["urls"]["other"]]
+        res_bin = requests.get(module["urls"]["binary"], timeout=5)
+        res_desc = requests.get(module["urls"]["description"], timeout=5)
+        res_others = [requests.get(x, timeout=5) for x in module["urls"]["other"]]
 
         # Check that each request succeeded before continuing on.
-        if not res_bin.ok or not res_desc.ok or any(map(lambda x: not x.ok, res_others)):
-            # TODO: Tell which ones failed.
-            raise Exception(f'Fetching file for module \'{module["name"]}\' from \'{module["urls"]}\' failed')
+        # Gather errors together.
+        errors = []
+        for res in [res_bin, res_desc] + res_others:
+            if not res.ok:
+                errors.append(res)
 
-        "Request for module by name"
+        if errors:
+            raise FetchFailures(errors)
+
+        # "Request for module by name"
         module_path = os.path.join(current_app.config["MODULE_FOLDER"], module["name"])
         # Confirm that the module directory exists and create it if not TODO:
         # This would be better performed at startup.
@@ -576,13 +606,14 @@ def fetch_modules(modules):
         with open(module_path, 'wb') as f:
             f.write(res_bin.content)
 
-        "Save downloaded module to module directory"
+        # "Save downloaded module to module directory"
         wu.wasm_modules[module["name"]] = wu.WasmModule(
+            id=module["id"],
             name=module["name"],
             path=module_path,
             description=res_desc.json(),
         )
-        "Add module details to module config"
+        # "Add module details to module config"
 
         # Add other listed files related to the module.
 

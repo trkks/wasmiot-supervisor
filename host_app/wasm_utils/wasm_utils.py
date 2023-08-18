@@ -10,7 +10,8 @@ from .wasm3_api import env, rt
 class WasmModule:
     """Class for describing WebAssembly modules"""
 
-    def __init__(self, name="", path="", size=0, paramPath="", data_ptr="", model_path="", description=""):
+    def __init__(self, id, name="", path="", size=0, paramPath="", data_ptr="", model_path="", description=""):
+        self.id = id
         self.name = name
         self.path = path
 
@@ -40,7 +41,7 @@ class WasmModule:
     def get_arg_types(self, fname):
         func = self.runtime.find_function(fname)
         return list(map(lambda x: arg_types[x], func.arg_types))
-    
+
 
 # wasm3 maps wasm function argument types as follows:
 # i32 : 1
@@ -57,7 +58,7 @@ arg_types = {
 
 wasm_modules = {}
 for name, details in modules.items():
-    wasm_modules[name] = WasmModule(name=name,
+    wasm_modules[name] = WasmModule(id="", name=name,
                                     path=details["path"],
                                     size=details["size"],
                                     paramPath=details["paramPath"],
@@ -66,7 +67,7 @@ for name, details in modules.items():
                                     )
 #wasm_modules = {
 #    #"app1": WasmModule(
-#    #    "app1.wasm", 
+#    #    "app1.wasm",
 #    #    "modules/app1.wasm",
 #    #    0,
 #    #    "modules/app1.json"
@@ -166,7 +167,7 @@ def start_modules():
         #    print(f"Result: {res:.3f}")
         #else:
         #    print("Error")
- 
+
 def write_to_memory(address, bytes_data):
     """
     Put bytes_data to WebAssembly runtime's memory starting from address.

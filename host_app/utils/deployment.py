@@ -26,23 +26,22 @@ class NotAPointer(Exception):
 class CallData:
     '''Stuff needed for calling next thing in request chain'''
     url: str
-    method: str = 'POST'
     type: str
     data: Any
+    method: str = 'POST'
 
 @dataclass
 class Deployment:
     '''Describing a sequence of instructions to be executed in (some) order.'''
-    instructions: list
-    program_counter: int = 0
-    modules: list[wu.WasmModule]
+    instructions: dict[str, dict[str, dict[str, dict[str, Any]]]]
+    modules: dict[str, wu.WasmModule]
 
     def _get_target(self, module_id, function_name):
         '''
         Return the target of this module's function's output based on
         instructions.
         '''
-        return self.instructions[module_id][function_name]['to']
+        return self.instructions["modules"][module_id][function_name]['to']
 
     def call_chain(self, output, module_id, function_name) -> CallData:
         '''
@@ -74,7 +73,7 @@ class Deployment:
         # chain) or return it to caller (respond).
         target = self._get_target(module_id, function_name)
         if target is None:
-            return None
+            return expected_result
 
         # TODO: Instead of indexing to the first, find based on ending in
         # deployment-, module-id and function_name? (it would be stupid
@@ -123,6 +122,8 @@ def parse_func_result(func_result, memory, expected_media_type, expected_schema=
             f.write(block)
         return temp_img_path
     if expected_media_type == 'application/octet-stream':
+        if expected_schema["type"] == "integer":
+            return func_result
         return read_bytes()
 
     raise NotImplementedError(f'Unsupported response media type {expected_media_type}')
