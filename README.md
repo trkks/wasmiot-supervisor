@@ -29,14 +29,30 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
+Note: if running the supervisor in a Raspberry Pi, uncomment the marked line in `requirements.txt` before running the following command.
+
 Finally installing is done with:
 ```
 pip install -r requirements.txt
 ```
 
+Set up device configuration files, `device-description.json` and `wasmiot-device-description.json` to `configs` folder. You can use the template configs from the `tempconfigs` folder as a starting point:
+
+```bash
+mkdir -p configs
+cp -r tempconfigs/* configs
+# edit the copied files if necessary
+```
+
 Set up [Sentry](https://sentry.io) logging (optional):
 ```
 export SENTRY_DSN="<your sentry-dsn here>"
+```
+
+Set up the device name (optional):
+
+```bash
+export FLASK_APP=my-device
 ```
 
 Run with:
@@ -150,6 +166,82 @@ curl -v -X POST -F data=@./husky.jpeg localhost:5000/ml/ml
 The supervisor will again, aften some time, respond with a four-byte representation of a 32-bit integer, that will match the line number in [the labels file](https://github.com/radu-matei/wasi-tensorflow-inference/blob/master/model/labels.txt).
 
 You can find another test image in the [wasi-inference repository in 'testdata'](https://github.com/radu-matei/wasi-tensorflow-inference/tree/master/testdata).
+
+### With orchestrator
+
+- Start the orchestrator (see [wasmiot-orchestrator](https://github.com/LiquidAI-project/wasmiot-orchestrator) for instructions).
+    - in these instructions the orchestrator is assumed be at `http://localhost:3000`
+- Install and start the supervisor (see [installation](./README.md#installation)).
+    - in these instructions the supervisor is assumed be at `http://localhost:5000` with a device name `my-device`
+- From the orchestrator's website check that `my-device` is discovered by the orhestrator: [http://localhost:3000/file/device](http://localhost:3000/file/device)
+- Create a new module with the orchestrator (Module creation):
+    - Name: `fibonacci`
+    - Openapi description: raw JSON content from [fibo/open-api-description.json](https://github.com/LiquidAI-project/wasmiot-modules/blob/main/modules/fibo/open-api-description.json)
+    - Select `Convert to JSON` and `Submit`
+- Push the new module to the orchestrator (Module upload):
+    - Select the module: choose `fibonacci`
+    - File to upload: choose a compiled `fibo.wasm` file (see [wasmiot-modules](https://github.com/LiquidAI-project/wasmiot-modules) for compilation instructions)
+    - Note that you might have to refresh the web page before the `fibonacci` module can be chosen
+    - Select `Submit`
+- Create a new deployment manifest (Deployment manifest creation):
+    - Name: `fibo-dep`
+    - Procedure-call sequence: select "Use my-device for fibonacci:fibo" (have only the 1 item in the sequence)
+    - Select `Convert to JSON` and `Submit`
+- Deploy the new module to the device (Deployment of deployment manifests):
+    - Select the deployment manifest: choose `fibo-dep`
+    - Note that you might have to refresh the web page before the `fibo-dep` manifest can be chosen
+    - Select `Deploy!`
+- Test the fibonacci deployment with the orchestrator (Execution):
+    - Select the deployment: choose `fibo-dep`
+    - Iteration count for fibonacci sequence: 12
+    - Select `Execute!`
+    - The response should be 233
+- Test the fibonacci deployment from the command line:
+    - List the deployments using the orchestrator: [http://localhost:3000/file/manifest](http://localhost:3000/file/manifest)
+    - Find the item with the name `fibo-dep`
+    - From `fullManifest` -> `deploymentId` you should see the deployment id
+    - From `fullManifest` -> `endpoints` -> `servers` -> `url` you should see the device address
+    - From `fullManifest` -> `endpoints` -> `paths` you should see the path for the fibonacci function
+    - From the commandline (replace DEPLOYMENT_ID with the one in your listing):
+
+        ```bash
+        curl http://localhost:5000/DEPLOYMENT_ID/modules/fibonacci/fibo?param1=12
+        ```
+
+        The answer should be: [233, 0, 0, 0]
+
+- For testing ML inference, create a new module with the orchestrator (Module creation):
+    - Name: `mobilenet`
+    - Openapi description: raw JSON content from [object-inference-open-api-description.json](https://github.com/LiquidAI-project/wasmiot-modules/blob/main/modules/object-inference-open-api-description.json)
+    - Select `Convert to JSON` and `Submit`
+- Push the new module to the orchestrator (Module upload):
+    - Select the module: choose `mobilenet`
+    - File to upload: choose `optimized-wasi.wasm` file (download link: [optimized-wasi.wasm](https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/optimized-wasi.wasm))
+    - Select `Submit`
+- Create a new deployment manifest (Deployment manifest creation):
+    - Name: `mobilenet-dep`
+    - Procedure-call sequence: select "Use my-device for mobilenet:alloc" (have only the 1 item in the sequence)
+    - Select `Convert to JSON` and `Submit`
+- Deploy the module to the device (Deployment of deployment manifests):
+    - Select the deployment manifest: choose `mobilenet-dep`
+    - Select `Deploy!`
+- Upload the ML model to the device using the command line:
+
+    ```bash
+    # first download the model from GitHub and then upload it to the device
+    curl -L https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/mobilenet_v2_1.4_224_frozen.pb > mobilenet_v2_1.4_224_frozen.pb
+    curl -F model=@./mobilenet_v2_1.4_224_frozen.pb http://localhost:5000/ml/model/mobilenet
+    ```
+
+- Test the fibonacci deployment from the command line:
+
+    ```bash
+    # First download the test image from GitHub and run the inference
+    curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg > husky.jpeg
+    curl -F data=@./husky.jpeg http://localhost:5000/ml/mobilenet
+    ```
+
+    The inference result should be 250.
 
 ## Devcontainer
 Use VSCode for starting in container. NOTE: Be sure the network it uses is
