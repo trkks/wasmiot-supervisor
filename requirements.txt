@@ -13,4 +13,7 @@ opencv-python-headless
 pywasm3
 wasmtime
 
+# Uncomment the following when using Raspberry Pi (required by adafruit)
+# RPi.GPIO
+
 -e .
