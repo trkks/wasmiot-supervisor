@@ -377,6 +377,9 @@ def run_ml_module(module_name = None):
 
     res = module.run_ml_inference(module_config.ml_model, data)
 
+    # TODO: remove the following direct response once the deployment id is included in the request
+    return jsonify({ 'result': res })
+
     # TODO: Use a common error-handling function for all endpoints.
     try:
         # FIXME This very is ridiculous...
