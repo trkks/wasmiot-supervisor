@@ -77,9 +77,9 @@ class Print(RemoteFunction):
     @property
     def function(self) -> Callable[[int, int], None]:
         """Print the string decoded from the specified memory location at the given runtime."""
-        def python_print(pointer: int, length: int, runtime: WasmRuntime) -> None:
+        def python_print(pointer: int, length: int) -> None:
             """Print the string decoded from the specified memory location at the given runtime."""
-            data = runtime.read_from_memory(pointer, length)
+            data = self.runtime.read_from_memory(pointer, length)
             message = data.decode()
             print(message, end="")
 
@@ -90,14 +90,14 @@ class TakeImage(RemoteFunction):
     """Remote function generator for printing."""
     @property
     def function(self) -> Callable[[int], None]:
-        def python_take_image(data_ptr: int, runtime: WasmRuntime) -> None:
+        def python_take_image(data_ptr: int) -> None:
             """Take an image and write it to the specified memory location at the given runtime."""
             cam = cv2.VideoCapture(0)
             _, img = cam.read()
             cam.release()
 
             data = np.array(img).flatten().tobytes()
-            runtime.write_to_memory(data_ptr, data)
+            self.runtime.write_to_memory(data_ptr, data)
 
         return python_take_image
 
@@ -138,7 +138,7 @@ class RandomGet(RemoteFunction):
 
         def random_get(buf_ptr: int, size: int) -> int:
             """Generate random bytes and write them to the specified memory location."""
-            self._runtime.write_to_memory(buf_ptr, os.urandom(size))
+            self.runtime.write_to_memory(buf_ptr, os.urandom(size))
             return WasiErrno.SUCCESS
 
         return random_get
