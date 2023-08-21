@@ -16,8 +16,8 @@ import requests
 from zeroconf import ServiceInfo, Zeroconf
 import socket
 
-# import cv2
-# import numpy as np
+import cv2
+import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 #from sentry_sdk.integrations import RequestsIntegration
@@ -223,6 +223,7 @@ def run_module_function(deployment_id, module_name = None, function_name = None)
     types = module.get_arg_types(function_name)  # get argument types
     params = [t(arg) for arg, t in zip(request.args.values(), types)]  # get parameters from get request with given types TODO: use parameter names according to description.
     res = module.run_function(function_name, params)
+    print(f"Result: {res}")
 
     # Return immediately if this request was purposefully made not in relation
     # to an existing deployment.
@@ -420,48 +421,71 @@ def upload_ml_model(module_name = None):
 
     return jsonify({'status': 'success'})
 
-# TODO: figure out how to refactor these image methods
-# Question: What is data_ptr, and where is it set?
+@bp.route('/img/<module_name>/<function_name>', methods=['POST'])
+def run_img_function(module_name = None, function_name = None):
+    """Image comes as a string of bytes (in file attribute)"""
+    if not module_name or not function_name:
+        return jsonify({'result': 'function of module not found'})
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
+    module = wasm_runtime.get_or_load_module(module_config)
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
 
-# @bp.route('/img/<module_name>/<function_name>', methods=['POST'])
-# def run_img_function(module_name = None, function_name = None):
-#     """Image comes as a string of bytes (in file attribute)"""
-#     if not module_name or not function_name:
-#         return jsonify({'result': 'function of module not found'})
-#     wu.load_module(wu.wasm_modules[module_name])
-#     file = request.files['img']
-#     img = file.read()
-#     print(type(img))
-#     print(len(img))
-#     #file.save('image.png')
-#     #filebytes = np.fromstring(file.read(), np.uint8)
-#     #img = cv2.imdecode(filebytes, cv2.IMREAD_UNCHANGED)
-#     #print(img.shape)
-#     shape = (480, 640, 3)
-#     #img_bytes = np.array(img).flatten().tobytes()
-#     img_bytes = img
-#     gs_img_bytes = wu.run_data_function(function_name, wu.wasm_modules[module_name].data_ptr, img_bytes)
-#     result = np.array(gs_img_bytes).reshape((shape))
-#     cv2.imwrite("../output/gsimg2.png", result)
-#     return jsonify({'status': 'success'})
+    file = request.files['img']
+    img = file.read()
+    print(type(img))
+    print(len(img))
+    #file.save('image.png')
+    #filebytes = np.fromstring(file.read(), np.uint8)
+    #img = cv2.imdecode(filebytes, cv2.IMREAD_UNCHANGED)
+    #print(img.shape)
+    shape = (480, 640, 3)
+    #img_bytes = np.array(img).flatten().tobytes()
+    img_bytes = img
 
-# @bp.route('/img2/<module_name>/<function_name>', methods=['POST'])
-# def run_grayscale(module_name = None, function_name = None):
-#     """Image comes as file"""
-#     if not module_name or not function_name:
-#         return jsonify({'result': 'function of module not found'})
-#     wu.load_module(wu.wasm_modules[module_name])
-#     file = request.files['img']
-#     #file.save('image.png')
-#     filebytes = np.fromstring(file.read(), np.uint8)
-#     img = cv2.imdecode(filebytes, cv2.IMREAD_UNCHANGED)
-#     #print(img.shape)
-#     shape = img.shape
-#     img_bytes = np.array(img).flatten().tobytes()
-#     gs_img_bytes = wu.run_data_function(function_name, wu.wasm_modules[module_name].data_ptr, img_bytes)
-#     result = np.array(gs_img_bytes).reshape((shape))
-#     cv2.imwrite("gsimg.png", result)
-#     return jsonify({'status': 'success'})
+    # FIXME: What is the correct value for data_ptr? And where should it be set?
+    gs_img_bytes = module.run_data_function(
+        function_name=function_name,
+        data_ptr_function_name="data_ptr",
+        data=img_bytes,
+        params=[]
+    )
+    result = np.array(gs_img_bytes).reshape((shape))
+    cv2.imwrite("../output/gsimg2.png", result)
+    return jsonify({'status': 'success'})
+
+@bp.route('/img2/<module_name>/<function_name>', methods=['POST'])
+def run_grayscale(module_name = None, function_name = None):
+    """Image comes as file"""
+    if not module_name or not function_name:
+        return jsonify({'result': 'function of module not found'})
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
+    module = wasm_runtime.get_or_load_module(module_config)
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
+
+    file = request.files['img']
+    #file.save('image.png')
+    filebytes = np.fromstring(file.read(), np.uint8)
+    img = cv2.imdecode(filebytes, cv2.IMREAD_UNCHANGED)
+    #print(img.shape)
+    shape = img.shape
+    img_bytes = np.array(img).flatten().tobytes()
+
+    # FIXME: What is the correct value for data_ptr? And where should it be set?
+    gs_img_bytes = module.run_data_function(
+        function_name=function_name,
+        data_ptr_function_name="data_ptr",
+        data=img_bytes,
+        params=[]
+    )
+    result = np.array(gs_img_bytes).reshape((shape))
+    cv2.imwrite("gsimg.png", result)
+    return jsonify({'status': 'success'})
 
 @bp.route('/deploy', methods=['POST'])
 def get_deployment():

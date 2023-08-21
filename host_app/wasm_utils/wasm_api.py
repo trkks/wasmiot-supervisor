@@ -128,9 +128,25 @@ class WasmModule:
         """Run a function from the Wasm module and return the result."""
         raise NotImplementedError
 
-    # def run_data_function(self, function_name: str, data: ByteType, params: List[Any]) -> ByteType:
-    #     """Run a function from the Wasm module with data and return the transformed data."""
-    #     raise NotImplementedError
+    def run_data_function(self, function_name: str, data_ptr_function_name: str,
+                          data: ByteType, params: List[Any]) -> ByteType:
+        """Run a function from the Wasm module with data and return the transformed data."""
+        func = self._get_function(function_name)
+        if func is None:
+            print(f"Function '{function_name}' not found!")
+            return bytes()
+        data_ptr_func = self._get_function(data_ptr_function_name)
+        if data_ptr_func is None:
+            print(f"Function '{data_ptr_function_name}' not found!")
+            return bytes()
+        data_ptr = self.run_function(data_ptr_function_name, [])
+        if not isinstance(data_ptr, int):
+            print("Could not get data pointer!")
+            return bytes()
+
+        self.runtime.write_to_memory(data_ptr, data, self.name)
+        _ = self.run_function(function_name, params)
+        return self.runtime.read_from_memory(data_ptr, len(data), self.name)
 
     def upload_data(self, data: bytes, alloc_function: str) -> Tuple[int | None, int | None]:
         """Upload data to the Wasm module.
