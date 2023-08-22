@@ -43,7 +43,7 @@ class WasmRuntime:
         return wasm_module
 
     def read_from_memory(self, address: int, length: int, module_name: Optional[str] = None
-    ) -> ByteType:
+    ) -> Tuple[bytes, Optional[str]]:
         """Read from the runtime memory and return the result.
 
         :return Tuple where the first item is the bytes inside in the requested
@@ -146,7 +146,12 @@ class WasmModule:
 
         self.runtime.write_to_memory(data_ptr, data, self.name)
         _ = self.run_function(function_name, params)
-        return self.runtime.read_from_memory(data_ptr, len(data), self.name)
+
+        new_data, error = self.runtime.read_from_memory(data_ptr, len(data), self.name)
+        if error is not None:
+            print(f"Error when reading memory: {error}")
+            return bytes()
+        return new_data
 
     def upload_data(self, data: bytes, alloc_function: str) -> Tuple[int | None, int | None]:
         """Upload data to the Wasm module.

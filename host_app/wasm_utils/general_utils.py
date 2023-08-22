@@ -88,8 +88,8 @@ class Print(RemoteFunction):
         """Print the string decoded from the specified memory location at the given runtime."""
         def python_print(pointer: int, length: int) -> None:
             """Print the string decoded from the specified memory location at the given runtime."""
-            data = self.runtime.read_from_memory(pointer, length)
-            message = data.decode()
+            data, error = self.runtime.read_from_memory(pointer, length)
+            message = data.decode() if error is None else error
             print(message, end="")
 
         return python_print
@@ -119,10 +119,17 @@ class RpcCall(RemoteFunction):
         Both the data and the target host is determined from the runtime memory."""
         def python_rpc_call(func_name_ptr: int, func_name_size: int,
                             data_ptr: int, data_size: int) -> None:
-            func_name = self.runtime.read_from_memory(func_name_ptr, func_name_size).decode()
+            func_name_bytes, error = self.runtime.read_from_memory(func_name_ptr, func_name_size)
+            if error is not None:
+                print(error)
+                return
+            func_name = func_name_bytes.decode()
             print(func_name)
             func = remote_functions[func_name]
-            data = self.runtime.read_from_memory(data_ptr, data_size)
+            data, error = self.runtime.read_from_memory(data_ptr, data_size)
+            if error is not None:
+                print(error)
+                return
             files = [("img", data)]
 
             response = requests.post(
