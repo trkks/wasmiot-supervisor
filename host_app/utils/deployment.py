@@ -12,16 +12,6 @@ import wasm_utils.wasm_utils as wu
 import wasm_utils.wasm3_api as wa
 
 
-class ProgramCounterExceeded(Exception):
-    '''Raised when a deployment sequence is exceeded'''
-
-class RequestFailed(Exception):
-    '''Raised when a chained request to a thing fails'''
-
-class NotAPointer(Exception):
-    '''Raised when a WebAssembly output should be a pointer and length but is
-    not'''
-
 @dataclass
 class CallData:
     '''Stuff needed for calling next thing in request chain'''
@@ -35,6 +25,11 @@ class Deployment:
     '''Describing a sequence of instructions to be executed in (some) order.'''
     instructions: dict[str, dict[str, dict[str, dict[str, Any]]]]
     modules: dict[str, wu.WasmModule]
+    #main_module: wu.WasmModule
+    '''
+    TODO: This module contains the execution logic or "script" for the whole
+    application composed of modules and distributed between devices.
+    '''
 
     def _get_target(self, module_id, function_name):
         '''
@@ -43,7 +38,7 @@ class Deployment:
         '''
         return self.instructions["modules"][module_id][function_name]['to']
 
-    def call_chain(self, output, module_id, function_name) -> CallData:
+    def call_chain(self, output, module_id, function_name, method) -> CallData:
         '''
         Call a sequence of functions in order, passing the result of each to the
         next.
@@ -55,7 +50,7 @@ class Deployment:
         # Get what the given result is expected to be at next receiver.
         module = self.modules[module_id]
         response_content = list(
-            module.description['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}']['get']['responses']['200']['content'].items()
+            module.description['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}'][method.lower()]['responses']['200']['content'].items()
         )[0]
         func_out_media_type = response_content[0]
         func_out_schema = response_content[1].get('schema')
@@ -79,10 +74,18 @@ class Deployment:
         # deployment-, module-id and function_name? (it would be stupid
         # string-matching though...)
         target_path, target_path_obj = list(target['paths'].items())[0]
-        target_url = target['servers'][0]['url'].rstrip("/") + '/' + target_path.lstrip("/")
-        target_method = list(target_path_obj.keys())[0]
+        # TODO: Fill in the blanks in the URL path/query with the given
+        # result according to OpenAPI description.
+        target_url = target['servers'][0]['url'].rstrip("/") \
+            + '/' \
+            + target_path.lstrip("/") \
+            + "?iterations=7"
+        OPEN_API_3_1_0_OPERATIONS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
+        target_method = next(
+            (x for x in target_path_obj.keys() if x.lower() in OPEN_API_3_1_0_OPERATIONS)
+        )
 
-        return CallData(target_url, target_method, func_out_media_type, expected_result)
+        return CallData(target_url, func_out_media_type, expected_result, target_method)
 
 def parse_func_result(func_result, memory, expected_media_type, expected_schema=None):
     '''
@@ -104,14 +107,15 @@ def parse_func_result(func_result, memory, expected_media_type, expected_schema=
     def read_bytes():
         pointer = func_result[0]
         length = func_result[1]
-        return wu.read_from_memory(pointer, length)
+        return bytes(wu.read_from_memory(pointer, length))
 
     if expected_media_type == 'application/json':
-        # TODO: Validate based on schema.
         try:
+            # TODO: Validate structural JSON based on schema.
             block = read_bytes()
-        except IndexError:
-            # Interpret to JSON string as is.
+        except TypeError:
+            # Assume the result is a Wasm primitive and interpret to JSON
+            # string as is.
             return json.dumps(func_result)
         return block.decode('utf-8')
     if expected_media_type == 'image/jpeg':
@@ -122,8 +126,6 @@ def parse_func_result(func_result, memory, expected_media_type, expected_schema=
             f.write(block)
         return temp_img_path
     if expected_media_type == 'application/octet-stream':
-        if expected_schema["type"] == "integer":
-            return func_result
         return read_bytes()
 
     raise NotImplementedError(f'Unsupported response media type {expected_media_type}')

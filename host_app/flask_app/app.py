@@ -3,7 +3,7 @@ This is a module :)
 """
 
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import os
 import socket
@@ -83,6 +83,8 @@ other devices and calling their functions
 @dataclass
 class RequestEntry():
     '''Describes what happened with a request'''
+    request_id: str = field(init=False)
+    '''Unique identifier for this request'''
     deployment_id: str
     module_name: str
     function_name: str
@@ -90,10 +92,9 @@ class RequestEntry():
     work_queued_at: datetime
     result: Any = None
 
-    @property
-    def request_id(self):
-        '''Return a unique identifier for this request'''
-        return f'{self.deployment_id}:{self.module_name}:{self.function_name}'
+    def __post_init__(self):
+        # TODO: Hash the ID (and include args and time as well)?
+        self.request_id = f'{self.deployment_id}:{self.module_name}:{self.function_name}'
 
     def wasm_args(self, module):
         '''Return the arguments for the WebAssembly function as a ordered list'''
@@ -121,33 +122,39 @@ def do_wasm_work(entry):
     _wasm_env.set(module.env)
 
     # Get any parameters from get request and match them to needed types.
-    res = module.run_function(entry.function_name, entry.wasm_args(module))
+    args = entry.wasm_args(module)
+    res = module.run_function(entry.function_name, args)
 
     # Follow deployment instructions.
-    call_chain_result = deployments[entry.deployment_id].call_chain(res, module.id, entry.function_name)
+    call_chain_result = deployments[entry.deployment_id] \
+        .call_chain(res, module.id, entry.function_name, request.method)
 
-    if call_chain_result is not CallData:
+    if not isinstance(call_chain_result, CallData):
         return call_chain_result
 
+    # Rename variable for clarity.
     next_call = call_chain_result
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not block the whole chain).
-    headers = { "Content-Type": call_chain_result.type }
+    headers = { "Content-Type": next_call.type }
+    files = None
+    data = None
+
     if next_call.type in FILE_TYPES:
         files = { 'data': open(next_call.data, 'rb') }
     else:
         data = next_call.data
 
-    response = getattr(requests, next_call.method)(
+    sub_response = getattr(requests, next_call.method)(
         next_call.url,
-        timeout=120,
+        timeout=10,
         data=data,
         files=files,
         headers=headers,
     )
 
-    return response
+    return sub_response.json()["resultUrl"]
 
 def make_history(entry):
     '''Add entry to request history after executing its work'''
@@ -317,12 +324,12 @@ def results_route(request_id=None, full=False):
     If full is True, return the full URL, otherwise just the path. This is so
     that routes can easily return URL for caller to read execution results.
     '''
-    root = '/request-history'
+    root = 'request-history'
     route = f'{root}/{request_id}' if request_id else root
-    return f'{request.root_url}/{route}' if full else route
+    return f'{request.root_url}{route}' if full else route
 
-@bp.route(results_route())
-@bp.route(results_route('<request_id>'))
+@bp.route('/' + results_route())
+@bp.route('/' + results_route('<request_id>'))
 def request_history_list(request_id=None):
     '''Return a list of or a specific entry result from previous call'''
     entry = next(
@@ -352,13 +359,13 @@ def run_module_function(deployment_id, module_name, function_name):
     )
 
     # Assume that the work wont take long and do it synchronously on GET.
-    if request.method == 'GET':
+    if request.method.lower() == 'get':
         make_history(entry)
     else:
         # Send data to worker thread to handle non-blockingly.
         wasm_queue.put(entry)
 
-    return jsonify({ 'result_url': results_route(entry.request_id, full=True) })
+    return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
 def run_module_function_raw_input(module_name, function_name):
