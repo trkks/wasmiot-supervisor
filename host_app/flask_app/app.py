@@ -451,7 +451,7 @@ def run_img_function(module_name = None, function_name = None):
     # FIXME: What is the correct value for data_ptr? And where should it be set?
     gs_img_bytes = module.run_data_function(
         function_name=function_name,
-        data_ptr_function_name="data_ptr",
+        data_ptr_function_name=module_config.data_ptr_function_name,
         data=img_bytes,
         params=[]
     )
@@ -482,7 +482,7 @@ def run_grayscale(module_name = None, function_name = None):
     # FIXME: What is the correct value for data_ptr? And where should it be set?
     gs_img_bytes = module.run_data_function(
         function_name=function_name,
-        data_ptr_function_name="data_ptr",
+        data_ptr_function_name=module_config.data_ptr_function_name,
         data=img_bytes,
         params=[]
     )

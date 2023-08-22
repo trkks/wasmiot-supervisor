@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeAlias
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeAlias
 
 ByteType: TypeAlias = bytes | bytearray
 
@@ -62,8 +62,8 @@ class WasmRuntime:
         """Runs a function in the Wasm runtime.
         If the function is not found, return None. Otherwise, returns the function result."""
         for _, module in self.modules.items():
-            function = module._get_function(function_name)  # pylint: disable=protected-access
-            if function is not None:
+            func = module._get_function(function_name)  # pylint: disable=protected-access
+            if func is not None:
                 print(f"Found function {function_name} in module {module.name}")
                 return module.run_function(function_name)
         return None
@@ -228,6 +228,7 @@ class ModuleConfig:
     path: str
     description: Any = field(default_factory=dict)
     ml_model: Optional[MLModel] = None
+    data_ptr_function_name: str = "get_img_ptr"
 
 
 @dataclass

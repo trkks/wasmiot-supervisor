@@ -12,7 +12,7 @@ from wasm_utils.general_utils import (
     python_clock_ms, python_delay, python_print_int, python_println, python_get_temperature,
     python_get_humidity, Print, TakeImage, RpcCall
 )
-from wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig, MLModel
+from wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig
 
 SERIALIZED_MODULE_POSTFIX = ".SERIALIZED.wasm"
 
@@ -178,7 +178,7 @@ class WasmtimeModule(WasmModule):
 
         try:
             func = self._instance.exports(self.runtime.store)[function_name]
-            print(f"Found function '{function_name}' in module '{self.name}'")
+            # print(f"Found function '{function_name}' in module '{self.name}'")
             return func
         except RuntimeError:
             print(f"Function '{function_name}' not found!")
