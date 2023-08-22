@@ -12,9 +12,9 @@ import queue
 import string
 import struct
 import threading
+from typing import Any, Tuple
 
 import atexit
-from typing import Tuple
 from flask import Flask, Blueprint, jsonify, current_app, request, send_file
 from flask.helpers import get_debug_flag
 from werkzeug.serving import get_sockaddr, select_address_family
@@ -34,7 +34,7 @@ from wasm_utils.wasm3_api import _wasm_rt, _wasm_env
 
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
-from utils.deployment import Deployment, CallData, ProgramCounterExceeded, RequestFailed
+from utils.deployment import Deployment, CallData
 
 
 MODULE_DIRECTORY = '../modules'
@@ -80,11 +80,33 @@ Mapping of deployment-IDs to instructions for forwarding function results to
 other devices and calling their functions
 """
 
+@dataclass
+class RequestEntry():
+    '''Describes what happened with a request'''
+    deployment_id: str
+    module_name: str
+    function_name: str
+    request_args: Any
+    work_queued_at: datetime
+    result: Any = None
+
+    @property
+    def request_id(self):
+        '''Return a unique identifier for this request'''
+        return f'{self.deployment_id}:{self.module_name}:{self.function_name}'
+
+    def wasm_args(self, module):
+        '''Return the arguments for the WebAssembly function as a ordered list'''
+        types = module.get_arg_types(self.function_name)
+        return [t(arg) for arg, t in zip(self.request_args.values(), types)]
+
 request_history = []
+'''Log of all the requests handled by this supervisor'''
+
 wasm_queue = queue.Queue()
+'''Queue of work for asynchoronous WebAssembly execution'''
 
-
-def do_wasm_work(deployment_id, module_name, function_name, request_args, do_chain=True):
+def do_wasm_work(entry):
     """
     Run a WebAssembly function and follow deployment instructions on what to
     do with its output.
@@ -92,24 +114,17 @@ def do_wasm_work(deployment_id, module_name, function_name, request_args, do_cha
     Return response of the possible call made or the raw result if chaining is
     not required.
     """
+
     # Setup Wasm runtime.
-    module = wu.wasm_modules[module_name]
+    module = wu.wasm_modules[entry.module_name]
     _wasm_rt.set(module.runtime)
     _wasm_env.set(module.env)
 
     # Get any parameters from get request and match them to needed types.
-    types = module.get_arg_types(function_name)
-    typed_params = [t(arg) for arg, t in zip(request_args.values(), types)]
-    res = module.run_function(function_name, typed_params)
-
-    if not do_chain:
-        return res
+    res = module.run_function(entry.function_name, entry.wasm_args(module))
 
     # Follow deployment instructions.
-    try:
-        call_chain_result = deployments[deployment_id].call_chain(res, module.id, function_name)
-    except RequestFailed as err:
-        print("Error: Check device conncetions: ", err)
+    call_chain_result = deployments[entry.deployment_id].call_chain(res, module.id, entry.function_name)
 
     if call_chain_result is not CallData:
         return call_chain_result
@@ -134,29 +149,28 @@ def do_wasm_work(deployment_id, module_name, function_name, request_args, do_cha
 
     return response
 
-def wasm_worker():
-    """Constantly try dequeueing work for using WebAssembly modules"""
-    while True:
-        deployment_id, module_name, function_name, the_rest = wasm_queue.get()
-        work_queued_at = datetime.now()
-        result = do_wasm_work(deployment_id, module_name, function_name, the_rest)
-        request_history.append({
-            "work_id": f'{deployment_id}:{module_name}:{function_name}',
-            "work_queued_at": work_queued_at,
-            "result": result
-        })
+def make_history(entry):
+    '''Add entry to request history after executing its work'''
+    entry.result = do_wasm_work(entry)
+    request_history.append(entry)
+    return entry
 
+def wasm_worker():
+    '''Constantly try dequeueing work for using WebAssembly modules'''
+    while True:
+        entry = wasm_queue.get()
+        make_history(entry)
         wasm_queue.task_done()
 
 # Turn-on the worker thread.
 threading.Thread(target=wasm_worker, daemon=True).start()
 
 def create_app(*args, **kwargs) -> Flask:
-    """
+    '''
     Create a new Flask application.
 
     Registers the blueprint and initializes zeroconf.
-    """
+    '''
     app = Flask(os.environ["FLASK_APP"], *args, **kwargs)
 
     app.config.update({
@@ -296,29 +310,55 @@ def thingi_health():
          "cpuUsage": random.random()
     })
 
-@bp.route('/request-logs')
-def request_logs():
-    '''Return a list of results from previous calls'''
-    return jsonify(request_history)
+def results_route(request_id=None, full=False):
+    '''
+    Return the route where execution/request results can be read from.
 
-@bp.route('/<deployment_id>/modules/<module_name>/<function_name>')
+    If full is True, return the full URL, otherwise just the path. This is so
+    that routes can easily return URL for caller to read execution results.
+    '''
+    root = '/request-history'
+    route = f'{root}/{request_id}' if request_id else root
+    return f'{request.root_url}/{route}' if full else route
+
+@bp.route(results_route())
+@bp.route(results_route('<request_id>'))
+def request_history_list(request_id=None):
+    '''Return a list of or a specific entry result from previous call'''
+    entry = next(
+            (jsonify(x) for x in request_history if x.request_id == request_id),
+            endpoint_failed(request, 'no matching entry in history', 404)
+        ) \
+        if request_id \
+        else None
+
+    return entry if entry else jsonify(request_history)
+
+@bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
 def run_module_function(deployment_id, module_name, function_name):
     '''
     Execute the function in WebAssembly module and act based on instructions
     attached to the deployment of this call/execution.
     '''
-    if not (deployment_id in deployments or deployment_id == "adhoc"):
+    if not (deployment_id in deployments):
         return endpoint_failed(request, 'deployment does not exist', 404)
 
-    # Passing 'adhoc' as the deployment allows running a function without
-    # following deployment instructions about call chaining.
-    if deployment_id == 'adhoc':
-        return do_wasm_work(deployment_id, module_name, function_name, request.args, False)
+    entry = RequestEntry(
+        deployment_id,
+        module_name,
+        function_name,
+        request.args,
+        datetime.now()
+    )
 
-    # Send the needed "valid" data for worker thread to handle non-blockingly.
-    wasm_queue.put((deployment_id, module_name, function_name, request.args))
+    # Assume that the work wont take long and do it synchronously on GET.
+    if request.method == 'GET':
+        make_history(entry)
+    else:
+        # Send data to worker thread to handle non-blockingly.
+        wasm_queue.put(entry)
 
-    return jsonify({ 'status': 'queued' })
+    return jsonify({ 'result_url': results_route(entry.request_id, full=True) })
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
 def run_module_function_raw_input(module_name, function_name):
@@ -456,13 +496,11 @@ def run_ml_module(module_name = None):
     try:
         # FIXME This very is ridiculous...
         resp_media_type, resp_schema = list(
-            module.description['paths'][f'/ml/{{module}}']['post']['responses']['200']['content'].items()
+            module.description['paths']['/ml/{{module}}']['post']['responses']['200']['content'].items()
         )[0]
         # TODO: Use the deployment-ID from the request.
         deployment_id = list(deployments.keys())[0]
         return deployments[deployment_id].call_chain(res, resp_media_type, resp_schema)
-    except ProgramCounterExceeded as err:
-        return endpoint_failed(request, str(err))
     except Exception as err:
         return endpoint_failed(request, str(err))
 
