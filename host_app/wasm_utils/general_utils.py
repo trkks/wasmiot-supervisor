@@ -1,17 +1,20 @@
 """General utilities for Wasm."""
 
 import os
+import platform
 from time import sleep, time
 from typing import Any, Callable
 
-import adafruit_dht
-import board
 import cv2
 import numpy as np
 import requests
 
 from utils.configuration import remote_functions
 from wasm_utils.wasm_api import WasmRuntime
+
+if platform.system() != "Windows":
+    import adafruit_dht
+    import board
 
 
 class RemoteFunction:
@@ -52,6 +55,9 @@ def python_print_int(number: int) -> None:
 
 def python_get_temperature() -> float:
     """Get the temperature from the DHT22 sensor."""
+    if platform.system() == "Windows":
+        return 0.0
+
     try:
         dht_device = adafruit_dht.DHT22(board.D4)
         temperature = dht_device.temperature
@@ -63,6 +69,9 @@ def python_get_temperature() -> float:
 
 def python_get_humidity() -> float:
     """Get the humidity from the DHT22 sensor."""
+    if platform.system() == "Windows":
+        return 0.0
+
     try:
         dht_device = adafruit_dht.DHT22(board.D4)
         humidity = dht_device.humidity
