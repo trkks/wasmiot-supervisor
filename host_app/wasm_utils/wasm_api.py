@@ -58,14 +58,14 @@ class WasmRuntime:
         Return None on success or an error message on failure."""
         raise NotImplementedError
 
-    def run_function(self, function_name: str) -> Optional[Any]:
+    def run_function(self, function_name: str, params: List[Any]) -> Optional[Any]:
         """Runs a function in the Wasm runtime.
         If the function is not found, return None. Otherwise, returns the function result."""
         for _, module in self.modules.items():
             func = module._get_function(function_name)  # pylint: disable=protected-access
             if func is not None:
-                print(f"Found function {function_name} in module {module.name}")
-                return module.run_function(function_name)
+                # print(f"Found function {function_name} in module {module.name}")
+                return module.run_function(function_name, params)
         return None
 
 
