@@ -74,16 +74,21 @@ class Deployment:
         # deployment-, module-id and function_name? (it would be stupid
         # string-matching though...)
         target_path, target_path_obj = list(target['paths'].items())[0]
-        # TODO: Fill in the blanks in the URL path/query with the given
-        # result according to OpenAPI description.
-        target_url = target['servers'][0]['url'].rstrip("/") \
-            + '/' \
-            + target_path.lstrip("/") \
-            + "?iterations=7"
+
         OPEN_API_3_1_0_OPERATIONS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
         target_method = next(
             (x for x in target_path_obj.keys() if x.lower() in OPEN_API_3_1_0_OPERATIONS)
         )
+
+        # NOTE: Only one parameter is supported for now (WebAssembly currently
+        # does not seem to support tuple outputs (easily))
+        args = f'{target_path_obj[target_method.lower()]["parameters"][0]["name"]}={expected_result}'
+
+        # Fill in parameters for next call based on OpenAPI description.
+        target_url = target['servers'][0]['url'].rstrip('/') \
+            + '/' \
+            + target_path.lstrip('/') \
+            + f'?{args}'
 
         return CallData(target_url, func_out_media_type, expected_result, target_method)
 
