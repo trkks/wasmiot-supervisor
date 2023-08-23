@@ -96,7 +96,7 @@ class RequestEntry():
         # TODO: Hash the ID (and include args and time as well)?
         self.request_id = f'{self.deployment_id}:{self.module_name}:{self.function_name}'
 
-    def wasm_args(self, module):
+    def wasm_typed_args(self, module):
         '''Return the arguments for the WebAssembly function as a ordered list'''
         types = module.get_arg_types(self.function_name)
         return [t(arg) for arg, t in zip(self.request_args.values(), types)]
@@ -121,22 +121,26 @@ def do_wasm_work(entry):
     _wasm_rt.set(module.runtime)
     _wasm_env.set(module.env)
 
+    deployment = deployments[entry.deployment_id]
+
     # Get any parameters from get request and match them to needed types.
-    args = entry.wasm_args(module)
-    res = module.run_function(entry.function_name, args)
+    args = entry.wasm_typed_args(module)
+    # Use description to call the function and transform inputs and outputs
+    # correctly.
+    ready_result = deployment.run_function(module, entry.function_name, request.method, args)
 
     # Follow deployment instructions.
-    call_chain_result = deployments[entry.deployment_id] \
-        .call_chain(res, module.id, entry.function_name, request.method)
+    next_target = deployment.next_target(module.id, entry.function_name)
 
-    if not isinstance(call_chain_result, CallData):
-        return call_chain_result
-
-    # Rename variable for clarity.
-    next_call = call_chain_result
+    if next_target is None:
+        # No sub-calls needed.
+        return ready_result
 
     # Do the next call, passing chain along and return immediately (i.e. the
-    # answer to current request should not block the whole chain).
+    # answer to current request should not be such, that it significantly blocks
+    # the whole chain).
+    next_call = deployment.call_chain(next_target, ready_result)
+
     headers = { "Content-Type": next_call.type }
     files = None
     data = None

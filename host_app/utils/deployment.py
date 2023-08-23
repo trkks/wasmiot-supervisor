@@ -31,32 +31,27 @@ class Deployment:
     application composed of modules and distributed between devices.
     '''
 
-    def _get_target(self, module_id, function_name):
+    def run_function(self, module, function_name, method, args) -> CallData:
         '''
-        Return the target of this module's function's output based on
-        instructions.
-        '''
-        return self.instructions["modules"][module_id][function_name]['to']
+        TODO: This might make more sense to reside somewhere else than
+        'deployment' module.
 
-    def call_chain(self, output, module_id, function_name, method) -> CallData:
-        '''
-        Call a sequence of functions in order, passing the result of each to the
-        next.
+        Using the module description about parameters and results, call the
+        function in module
 
-        Return the result of the recursive call chain or the local result which
-        starts unwinding the chain.
+        :returns The result of the function execution in its described
+        format.
         '''
+        output = module.run_function(function_name, args)
 
-        # Get what the given result is expected to be at next receiver.
-        module = self.modules[module_id]
+        # Get what format the given output is expected to be in.
         response_content = list(
             module.description['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}'][method.lower()]['responses']['200']['content'].items()
         )[0]
         func_out_media_type = response_content[0]
         func_out_schema = response_content[1].get('schema')
 
-        # From the WebAssembly function's execution, parse result into the type
-        # that needs to be used as argument for next call in sequence.
+        # Parse the WebAssembly function's execution result into the format.
         expected_result = parse_func_result(
             output,
             wa.rt.get_memory(0),
@@ -64,33 +59,48 @@ class Deployment:
             func_out_schema
         )
 
-        # Select whether to forward the result to next node (deepening the call
-        # chain) or return it to caller (respond).
-        target = self._get_target(module_id, function_name)
-        if target is None:
-            return expected_result
+        return expected_result
 
-        # TODO: Instead of indexing to the first, find based on ending in
-        # deployment-, module-id and function_name? (it would be stupid
-        # string-matching though...)
+    def next_target(self, module_id, function_name):
+        '''
+        Return the target of this module's function's output based on
+        instructions.
+        '''
+        return self.instructions["modules"][module_id][function_name]['to']
+
+    def call_chain(self, target, params) -> CallData:
+        '''
+        Find out the next function to be called in the deployment after the
+        specified one.
+
+        Return instructions for the next call to be made or None if not needed.
+        '''
+        # NOTE: Assuming the deployment contains only one path for now.
         target_path, target_path_obj = list(target['paths'].items())[0]
 
-        OPEN_API_3_1_0_OPERATIONS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
+        OPEN_API_3_1_0_OPERATIONS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"]
         target_method = next(
             (x for x in target_path_obj.keys() if x.lower() in OPEN_API_3_1_0_OPERATIONS)
         )
 
-        # NOTE: Only one parameter is supported for now (WebAssembly currently
-        # does not seem to support tuple outputs (easily))
-        args = f'{target_path_obj[target_method.lower()]["parameters"][0]["name"]}={expected_result}'
+        # Select specific media type if request input file requires it.
+        media_type = None
+        if rbody := target_path_obj[target_method.lower()] \
+            .get('requestBody', None):
+            media_type = rbody.content.keys()[0]
 
         # Fill in parameters for next call based on OpenAPI description.
+        # NOTE: Only one parameter is supported for now (WebAssembly currently
+        # does not seem to support tuple outputs (easily))
+        args = f'{target_path_obj[target_method.lower()]["parameters"][0]["name"]}={params}'
+
+        # Path (TODO) and query.
         target_url = target['servers'][0]['url'].rstrip('/') \
             + '/' \
             + target_path.lstrip('/') \
             + f'?{args}'
 
-        return CallData(target_url, func_out_media_type, expected_result, target_method)
+        return CallData(target_url, media_type, params, target_method)
 
 def parse_func_result(func_result, memory, expected_media_type, expected_schema=None):
     '''
