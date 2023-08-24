@@ -4,12 +4,14 @@ of "things" (i.e., WebAssembly services/functions on devices) and executing
 their instructions.
 '''
 
-import json
 from dataclasses import dataclass
 from functools import reduce
+import json
+import os
 from typing import Any, Tuple
 
 import wasm_utils.wasm_utils as wu
+from wasm_utils.wasm3_api import rt
 
 
 @dataclass
@@ -31,7 +33,7 @@ class Endpoint:
         path, path_obj = assert_single_pop(description['paths'].items())
 
         target_method, operation_obj = get_operation(path_obj)
-        response_media = get_response_content_field(operation_obj)
+        response_media = get_main_response_content_entry(operation_obj)
 
         # Select specific media type based on the possible _input_ to this
         # endpoint (e.g., if this endpoint can receive a JPEG-image).
@@ -133,6 +135,59 @@ class Deployment:
 
         return None
 
+    def interpret_args_for(self, module_id, function_name, args: dict, input_file_paths: list) -> list[int]:
+        '''
+        Based on module's function's description, figure out what the
+        WebAssembly function will need as input (i.e., is it necessary to
+        allocate memory and pass in pointers instead of the raw args).
+        '''
+        def write_file(file_path) -> Tuple[int, int]:
+            '''
+            Write file contents to WebAssembly dynamic memory ASSUMING
+            the function for allocating memory exists in the module.
+            '''
+            file_handle = open(file_path, 'rb')
+            size = os.path.getsize(file_path)
+            alloc = rt.find_function("alloc")
+            ptr = alloc(size)
+            mem = rt.get_memory(0)
+            mem[ptr:ptr + size] = file_handle.read()
+            return ptr, size
+
+        _, operation = get_operation(assert_single_pop(
+            self.instructions['modules'][module_id][function_name]['paths'].values()
+        ))
+
+        # "Pointers" here are tuples of address and length (amount of bytes),
+        # but are stored "flat" for easily passing them to WebAssembly afterwards.
+        # They will be used whenever function input is not a WebAssembly
+        # primitive.
+        # - TODO: Write primitive-typed lists and strings to memory and add
+        # their pointers to the list first.
+        # - If a model (TODO: Or any other files) are attached to the module at
+        # deployement time, pass pointers of their contents to the function
+        # first.
+        # - Pointers to contents of external files come last in the list.
+        ptrs: list[int] = []
+
+        module = self.modules[module_id]
+        if module.model_path:
+           model_ptr, model_size = write_file(module.model_path)
+           ptrs += [model_ptr, model_size]
+
+        if 'requestBody' in operation:
+            # NOTE: Assuming a single file as input.
+            file_path = input_file_paths[0]
+            file_ptr, file_size = write_file(file_path)
+            ptrs += [file_ptr, file_size]
+
+        # Map the request args (query) into WebAssembly-typed (primitive)
+        # arguments in an ordered list.
+        types = module.get_arg_types(function_name)
+        primitive_args = [t(arg) for arg, t in zip(args.values(), types)]
+
+        return primitive_args + ptrs
+
     def interpret_call_from(self, module_id, function_name, wasm_output) -> Tuple[Any, CallData]:
         '''
         Find out the next function to be called in the deployment after the
@@ -150,7 +205,7 @@ class Deployment:
         # NOTE: Assuming the actual method used was the one described in
         # deployment.
         _, operation_obj = get_operation(source_func_path)
-        response_media = get_response_content_field(operation_obj)
+        response_media = get_main_response_content_entry(operation_obj)
 
         source_endpoint_result = parse_endpoint_result(
             wasm_output, None, *response_media
@@ -228,9 +283,9 @@ def get_operation(path_obj) -> Tuple[str, dict[str, Any]]:
 
     return target_method, path_obj[target_method.lower()]
 
-def get_response_content_field(operation_obj):
+def get_main_response_content_entry(operation_obj):
     '''
-    Dig out the one and only one response media type and matching object from
+    Dig out the one and only one _response_ media type and matching object from
     the OpenAPI v3.1.0 operation object's content field.
 
     NOTE: 200 is the only assumed response code.

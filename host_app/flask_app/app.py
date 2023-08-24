@@ -90,6 +90,7 @@ class RequestEntry():
     function_name: str
     method: str
     request_args: Any
+    request_files: list[str]
     work_queued_at: datetime
     result: Any = None
 
@@ -98,11 +99,6 @@ class RequestEntry():
         # current way multiple same requests get overwritten.
         self.request_id = f'{self.deployment_id}:{self.module_name}:{self.function_name}'
 
-    def wasm_typed_args(self, module):
-        '''Return the arguments for the WebAssembly function as a ordered list'''
-        types = module.get_arg_types(self.function_name)
-        return [t(arg) for arg, t in zip(self.request_args.values(), types)]
-
 request_history = []
 '''Log of all the requests handled by this supervisor'''
 
@@ -110,13 +106,13 @@ wasm_queue = queue.Queue()
 '''Queue of work for asynchoronous WebAssembly execution'''
 
 def do_wasm_work(entry):
-    """
+    '''
     Run a WebAssembly function and follow deployment instructions on what to
     do with its output.
 
     Return response of the possible call made or the raw result if chaining is
     not required.
-    """
+    '''
 
     # Setup Wasm runtime.
     module = wu.wasm_modules[entry.module_name]
@@ -125,9 +121,14 @@ def do_wasm_work(entry):
 
     deployment = deployments[entry.deployment_id]
 
-    # Get any parameters from get request and match them to needed types.
-    args = entry.wasm_typed_args(module)
-    raw_output = module.run_function(entry.function_name, args)
+    wasm_args = deployment.interpret_args_for(
+        module.id,
+        entry.function_name,
+        entry.request_args,
+        entry.request_files
+    )
+
+    raw_output = module.run_function(entry.function_name, wasm_args)
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
@@ -151,12 +152,12 @@ def do_wasm_work(entry):
         data = next_call.data
 
     sub_response = getattr(requests, next_call.method)(
-            next_call.url,
-            timeout=10,
-            data=data,
-            files=files,
-            headers=next_call.headers,
-        )
+        next_call.url,
+        timeout=10,
+        data=data,
+        files=files,
+        headers=next_call.headers,
+    )
 
     return sub_response.json()["resultUrl"]
 
@@ -354,12 +355,23 @@ def run_module_function(deployment_id, module_name, function_name):
     if not deployment_id in deployments:
         return endpoint_failed(request, 'deployment does not exist', 404)
 
+    # Write input data to filesystem.
+    input_file_paths = []
+    if (input_data_file := request.files.get('data')):
+        input_file_path = os.path.join(
+            current_app.config['PARAMS_FOLDER'],
+            input_data_file.filename
+        )
+        input_data_file.save(input_file_path)
+        input_file_paths.append(input_file_path)
+
     entry = RequestEntry(
         deployment_id,
         module_name,
         function_name,
         request.method,
         request.args,
+        input_file_paths,
         datetime.now()
     )
 
