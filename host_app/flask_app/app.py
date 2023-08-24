@@ -88,12 +88,14 @@ class RequestEntry():
     deployment_id: str
     module_name: str
     function_name: str
+    method: str
     request_args: Any
     work_queued_at: datetime
     result: Any = None
 
     def __post_init__(self):
-        # TODO: Hash the ID (and include args and time as well)?
+        # TODO: Hash the ID (and include args and time as well) because in this
+        # current way multiple same requests get overwritten.
         self.request_id = f'{self.deployment_id}:{self.module_name}:{self.function_name}'
 
     def wasm_typed_args(self, module):
@@ -125,38 +127,36 @@ def do_wasm_work(entry):
 
     # Get any parameters from get request and match them to needed types.
     args = entry.wasm_typed_args(module)
-    # Use description to call the function and transform inputs and outputs
-    # correctly.
-    ready_result = deployment.run_function(module, entry.function_name, request.method, args)
-
-    # Follow deployment instructions.
-    next_target = deployment.next_target(module.id, entry.function_name)
-
-    if next_target is None:
-        # No sub-calls needed.
-        return ready_result
+    raw_output = module.run_function(entry.function_name, args)
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
     # the whole chain).
-    next_call = deployment.call_chain(next_target, ready_result)
+    this_result, next_call = deployment.interpret_call_from(
+        module.id, entry.function_name, raw_output
+    )
 
-    headers = { "Content-Type": next_call.type }
+    if not isinstance(next_call, CallData):
+        # No sub-calls needed.
+        return this_result
+
     files = None
     data = None
 
-    if next_call.type in FILE_TYPES:
+    # If the result media type is a file, the filepath should be in the
+    # data-field, where it will be read and sent from.
+    if next_call.headers.get("Content-Type", None) in FILE_TYPES:
         files = { 'data': open(next_call.data, 'rb') }
     else:
         data = next_call.data
 
     sub_response = getattr(requests, next_call.method)(
-        next_call.url,
-        timeout=10,
-        data=data,
-        files=files,
-        headers=headers,
-    )
+            next_call.url,
+            timeout=10,
+            data=data,
+            files=files,
+            headers=next_call.headers,
+        )
 
     return sub_response.json()["resultUrl"]
 
@@ -351,13 +351,14 @@ def run_module_function(deployment_id, module_name, function_name):
     Execute the function in WebAssembly module and act based on instructions
     attached to the deployment of this call/execution.
     '''
-    if not (deployment_id in deployments):
+    if not deployment_id in deployments:
         return endpoint_failed(request, 'deployment does not exist', 404)
 
     entry = RequestEntry(
         deployment_id,
         module_name,
         function_name,
+        request.method,
         request.args,
         datetime.now()
     )

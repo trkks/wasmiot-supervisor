@@ -6,19 +6,107 @@ their instructions.
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from functools import reduce
+from typing import Any, Tuple
 
 import wasm_utils.wasm_utils as wu
-import wasm_utils.wasm3_api as wa
 
 
 @dataclass
-class CallData:
-    '''Stuff needed for calling next thing in request chain'''
+class Endpoint:
+    '''Describing an endpoint for a RPC-call'''
     url: str
-    type: str
-    data: Any
-    method: str = 'POST'
+    method: str
+    parameters: list[dict[str, str | bool]]
+    response_media_obj: Tuple[str, dict[str, Any] | None]
+    request_media_obj: Tuple[str, dict[str, Any] | None] | None = None
+
+    @classmethod
+    def from_openapi(cls, description: dict[str, Any]):
+        '''
+        Create an Endpoint object from an endpoint's OpenAPI v3.1.0
+        description path item object.
+        '''
+        # NOTE: The deployment should only contain one path per function.
+        path, path_obj = assert_single_pop(description['paths'].items())
+
+        target_method, operation_obj = get_operation(path_obj)
+        response_media = get_response_content_field(operation_obj)
+
+        # Select specific media type based on the possible _input_ to this
+        # endpoint (e.g., if this endpoint can receive a JPEG-image).
+        request_media = None
+        if (rbody := operation_obj.get('requestBody', None)):
+            # NOTE: The first media type is selected.
+            request_media = assert_single_pop(rbody['content'].items())
+
+        server = assert_single_pop(description['servers'])
+        url = server['url'].rstrip('/') + path
+
+        return cls(
+            url,
+            target_method,
+            operation_obj['parameters'],
+            response_media,
+            request_media
+        )
+
+@dataclass
+class CallData:
+    '''Minimal stuff needed for calling an endpoint'''
+    url: str
+    headers: dict[str, str]
+    method: str
+    data: str | dict[str, Any]
+
+    @classmethod
+    def from_endpoint(
+        cls,
+        endpoint: Endpoint,
+        args: Any,
+        data: str | dict[str, Any] | None = None
+    ):
+        '''
+        Fill in the parameters for an endpoint with arguments and data.
+        '''
+
+        # TODO: Fill in URL path.
+
+        # Fill in URL query.
+        if isinstance(args, str):
+            # Add the single parameter to the query.
+
+            # NOTE: Only one parameter is supported for now (WebAssembly currently
+            # does not seem to support tuple outputs (easily)). Also path should
+            # have been already filled and provided in the deployment phase.
+            param_name = endpoint.parameters[0]["name"]
+            param_value = args
+            query = f'?{param_name}={param_value}'
+        elif isinstance(args, list):
+            # Build the query in order.
+            query = reduce(
+                lambda acc, x: f'{acc}&{x[0]}={x[1]}',
+                zip(map(lambda y: y["name"], endpoint.parameters), args),
+                '?'
+            )
+        elif isinstance(args, dict):
+            # Build the query based on matching names.
+            query = reduce(
+                lambda acc, x: f'{acc}&{x[0]}={x[1]}',
+                ((y["name"], args[y["name"]]) for y in endpoint.parameters),
+                '?'
+            )
+        else:
+            raise NotImplementedError(f'Unsupported argument type "{type(args)}"')
+
+        target_url = endpoint.url.rstrip('/') + query
+
+        headers = {}
+        if endpoint.request_media_obj:
+            headers['Content-Type'] = endpoint.request_media_obj[0]
+
+        return cls(target_url, headers, endpoint.method, data)
+
 
 @dataclass
 class Deployment:
@@ -31,78 +119,49 @@ class Deployment:
     application composed of modules and distributed between devices.
     '''
 
-    def run_function(self, module, function_name, method, args) -> CallData:
+    def _next_target(self, module_id, function_name) -> Endpoint | None:
         '''
-        TODO: This might make more sense to reside somewhere else than
-        'deployment' module.
-
-        Using the module description about parameters and results, call the
-        function in module
-
-        :returns The result of the function execution in its described
-        format.
+        Return the target where the module's function's output is to be sent next.
         '''
-        output = module.run_function(function_name, args)
 
-        # Get what format the given output is expected to be in.
-        response_content = list(
-            module.description['paths'][f'/{{deployment}}/modules/{{module}}/{function_name}'][method.lower()]['responses']['200']['content'].items()
-        )[0]
-        func_out_media_type = response_content[0]
-        func_out_schema = response_content[1].get('schema')
+        if (next_endpoint := self.instructions['modules'][module_id][function_name]['to']):
+            # TODO: Check if the endpoint is on this device already or not to
+            # prevent unnecessary network requests.
+            # endpoint_description = self.instructions['endpoints'][next_endpoint.function_name]
+            endpoint_description = next_endpoint
+            return Endpoint.from_openapi(endpoint_description)
 
-        # Parse the WebAssembly function's execution result into the format.
-        expected_result = parse_func_result(
-            output,
-            wa.rt.get_memory(0),
-            func_out_media_type,
-            func_out_schema
-        )
+        return None
 
-        return expected_result
-
-    def next_target(self, module_id, function_name):
-        '''
-        Return the target of this module's function's output based on
-        instructions.
-        '''
-        return self.instructions["modules"][module_id][function_name]['to']
-
-    def call_chain(self, target, params) -> CallData:
+    def interpret_call_from(self, module_id, function_name, wasm_output) -> Tuple[Any, CallData]:
         '''
         Find out the next function to be called in the deployment after the
         specified one.
 
-        Return instructions for the next call to be made or None if not needed.
+        Return interpreted result of the current endpoint and instructions for
+        the next call to be made if there is one.
         '''
-        # NOTE: Assuming the deployment contains only one path for now.
-        target_path, target_path_obj = list(target['paths'].items())[0]
 
-        OPEN_API_3_1_0_OPERATIONS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"]
-        target_method = next(
-            (x for x in target_path_obj.keys() if x.lower() in OPEN_API_3_1_0_OPERATIONS)
+        # Transform the raw Wasm result into the described output of _this_
+        # endpoint for sending to the next endpoint.
+        source_func_path = assert_single_pop(
+            self.instructions['modules'][module_id][function_name]['paths'].values()
+        )
+        # NOTE: Assuming the actual method used was the one described in
+        # deployment.
+        _, operation_obj = get_operation(source_func_path)
+        response_media = get_response_content_field(operation_obj)
+
+        source_endpoint_result = parse_endpoint_result(
+            wasm_output, None, *response_media
         )
 
-        # Select specific media type if request input file requires it.
-        media_type = None
-        if rbody := target_path_obj[target_method.lower()] \
-            .get('requestBody', None):
-            media_type = rbody.content.keys()[0]
+        # Check if there still is stuff to do.
+        if (next_endpoint := self._next_target(module_id, function_name)):
+            return source_endpoint_result, CallData.from_endpoint(next_endpoint, source_endpoint_result)
+        return source_endpoint_result, None
 
-        # Fill in parameters for next call based on OpenAPI description.
-        # NOTE: Only one parameter is supported for now (WebAssembly currently
-        # does not seem to support tuple outputs (easily))
-        args = f'{target_path_obj[target_method.lower()]["parameters"][0]["name"]}={params}'
-
-        # Path (TODO) and query.
-        target_url = target['servers'][0]['url'].rstrip('/') \
-            + '/' \
-            + target_path.lstrip('/') \
-            + f'?{args}'
-
-        return CallData(target_url, media_type, params, target_method)
-
-def parse_func_result(func_result, memory, expected_media_type, expected_schema=None):
+def parse_endpoint_result(func_result, memory, media_type, schema):
     '''
     Based on media type (and schema if a structure like JSON), transform given
     WebAssembly function output into the expected format.
@@ -124,7 +183,7 @@ def parse_func_result(func_result, memory, expected_media_type, expected_schema=
         length = func_result[1]
         return bytes(wu.read_from_memory(pointer, length))
 
-    if expected_media_type == 'application/json':
+    if media_type == 'application/json':
         try:
             # TODO: Validate structural JSON based on schema.
             block = read_bytes()
@@ -133,14 +192,47 @@ def parse_func_result(func_result, memory, expected_media_type, expected_schema=
             # string as is.
             return json.dumps(func_result)
         return block.decode('utf-8')
-    if expected_media_type == 'image/jpeg':
+    if media_type == 'image/jpeg':
         # Write the image to a temp file and return the path.
         temp_img_path = 'temp_image.jpg'
         block = read_bytes()
         with open(temp_img_path, 'wb') as f:
             f.write(block)
         return temp_img_path
-    if expected_media_type == 'application/octet-stream':
+    if media_type == 'application/octet-stream':
         return read_bytes()
 
-    raise NotImplementedError(f'Unsupported response media type {expected_media_type}')
+    raise NotImplementedError(f'Unsupported response media type "{media_type}"')
+
+def assert_single_pop(iterable) -> Any | None:
+    '''
+    Assert that the iterator has only one item and return it.
+    '''
+    iterator = iter(iterable)
+    item = next(iter(iterator), None)
+    assert item and not next(iterator, None), 'Only one item expected'
+    return item
+
+def get_operation(path_obj) -> Tuple[str, dict[str, Any]]:
+    '''
+    Dig out the one and only one operation method and object from the OpenAPI
+    v3.1.0 path object.
+    '''
+    open_api_3_1_0_operations = [
+        'get', 'put', 'post', 'delete',
+        'options', 'head', 'patch', 'trace'
+    ]
+    target_method = assert_single_pop(
+        (x for x in path_obj.keys() if x.lower() in open_api_3_1_0_operations)
+    )
+
+    return target_method, path_obj[target_method.lower()]
+
+def get_response_content_field(operation_obj):
+    '''
+    Dig out the one and only one response media type and matching object from
+    the OpenAPI v3.1.0 operation object's content field.
+
+    NOTE: 200 is the only assumed response code.
+    '''
+    return assert_single_pop(operation_obj['responses']['200']['content'].items())
