@@ -121,20 +121,20 @@ def do_wasm_work(entry):
 
     deployment = deployments[entry.deployment_id]
 
-    wasm_args = deployment.interpret_args_for(
+    wasm_args, wasm_out_args = deployment.interpret_args_for(
         module.id,
         entry.function_name,
         entry.request_args,
         entry.request_files
     )
 
-    raw_output = module.run_function(entry.function_name, wasm_args)
+    raw_output = module.run_function(entry.function_name, wasm_args + wasm_out_args)
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
     # the whole chain).
     this_result, next_call = deployment.interpret_call_from(
-        module.id, entry.function_name, raw_output
+        module.id, entry.function_name, wasm_out_args, raw_output
     )
 
     if not isinstance(next_call, CallData):

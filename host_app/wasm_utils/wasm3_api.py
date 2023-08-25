@@ -1,4 +1,5 @@
 import os
+import struct
 from time import sleep,time
 import wasm3
 import requests
@@ -45,14 +46,33 @@ def m3_python_println(msg):
 def m3_python_printInt(n):
     print(n, end="")
 
-def m3_python_takeImage(data_ptr):
+def m3_python_takeImage(out_ptr_ptr, out_size_ptr):
+    """
+    Take an image and store it in the memory of the wasm module
+
+    Store the pointer to the image in out_ptr_ptr and the size as in
+    out_size_ptr both in 32bits LSB.
+    """
     cam = cv2.VideoCapture(0)
     _, img = cam.read()
     cam.release()
+    #if not img:
+    #    return 1
+    #cv2.imwrite("temp_image.jpg", img)
+    #_, datatmp = cv2.imencode(".jpg", img)
+    # data = datatmp.tobytes()
+    with open("husky.jpg", "rb") as fp:
+        data = fp.read()
 
+    from hashlib import sha256; print("Into Wasm:", sha256(data).hexdigest())
+
+    alloc = rt.find_function("alloc")
+    out_ptr = alloc(len(data))
     mem = rt.get_memory(0)
-    data = np.array(img).flatten().tobytes()
-    mem[data_ptr:data_ptr + len(data)] = data
+    pointer_bytes = struct.pack("<I", out_ptr)
+    length_bytes = struct.pack("<I", len(data))
+    mem[out_ptr_ptr:out_ptr_ptr + 4] = pointer_bytes
+    mem[out_size_ptr:out_size_ptr + 4] = length_bytes
 
 def m3_python_rpcCall(func_name_ptr, func_name_size, data_ptr, data_size):
     mem = rt.get_memory(0)
@@ -88,7 +108,7 @@ def m3_python_getHumidity():
         return humidity
     except Exception as error:
         print(error.args[0])
-    
+
 class WasiErrno:
     SUCCESS = 0
     BADF = 8
@@ -118,7 +138,7 @@ def link_functions(mod):
     mod.link_function(communication, "rpcCall", "v(*iii)", m3_python_rpcCall)
 
     # peripheral
-    mod.link_function(camera, "takeImage", "v(i)", m3_python_takeImage)
+    mod.link_function(camera, "takeImage", "v(*i)", m3_python_takeImage)
     mod.link_function(dht, "getTemperature", "f()", m3_python_getTemperature)
     mod.link_function(dht, "getHumidity", "f()", m3_python_getHumidity)
 

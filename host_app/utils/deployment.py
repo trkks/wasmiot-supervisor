@@ -10,6 +10,9 @@ import json
 import os
 from typing import Any, Tuple
 
+import cv2
+import numpy as np
+
 import wasm_utils.wasm_utils as wu
 from wasm_utils.wasm3_api import rt
 
@@ -135,11 +138,20 @@ class Deployment:
 
         return None
 
-    def interpret_args_for(self, module_id, function_name, args: dict, input_file_paths: list) -> list[int]:
+    def interpret_args_for(
+        self,
+        module_id,
+        function_name,
+        args: dict,
+        input_file_paths: list
+    ) -> Tuple[list[int], list[int]]:
         '''
         Based on module's function's description, figure out what the
         WebAssembly function will need as input (i.e., is it necessary to
         allocate memory and pass in pointers instead of the raw args).
+
+        The result tuple will contain arguments and argument pointers first and
+        output pointers second (if any).
         '''
         def write_file(file_path) -> Tuple[int, int]:
             '''
@@ -154,6 +166,8 @@ class Deployment:
             mem[ptr:ptr + size] = file_handle.read()
             return ptr, size
 
+        # Get the OpenAPI description for interpreting more complex arguments
+        # (e.g., lists and files).
         _, operation = get_operation(assert_single_pop(
             self.instructions['modules'][module_id][function_name]['paths'].values()
         ))
@@ -170,25 +184,61 @@ class Deployment:
         # - Pointers to contents of external files come last in the list.
         ptrs: list[int] = []
 
+        # Files attached to the module at deployment time.
         module = self.modules[module_id]
         if module.model_path:
            model_ptr, model_size = write_file(module.model_path)
            ptrs += [model_ptr, model_size]
 
-        if 'requestBody' in operation:
-            # NOTE: Assuming a single file as input.
-            file_path = input_file_paths[0]
-            file_ptr, file_size = write_file(file_path)
-            ptrs += [file_ptr, file_size]
+        # Now that deployment-time parameters are set, map the more dynamic
+        # parameters given in request.
 
         # Map the request args (query) into WebAssembly-typed (primitive)
         # arguments in an ordered list.
         types = module.get_arg_types(function_name)
         primitive_args = [t(arg) for arg, t in zip(args.values(), types)]
 
-        return primitive_args + ptrs
+        # Files given as input in request.
+        if 'requestBody' in operation:
+            # NOTE: Assuming a single file as input.
+            file_path = input_file_paths[0]
+            file_ptr, file_size = write_file(file_path)
+            ptrs += [file_ptr, file_size]
 
-    def interpret_call_from(self, module_id, function_name, wasm_output) -> Tuple[Any, CallData]:
+        # Lastly if the _response_ is not a primitive, memory needs to be
+        # allocated for it as well for WebAssembly to write and host to read
+        # later.
+        result_ptrs = []
+        def alloc_ptrs():
+            '''
+            Allocate WebAssembly memory for two 32bit pointers:
+              - (1) for WebAssembly to _store address to_ its dynamically
+              allocated memory block (i.e., this will point to a pointer)
+              - (2) for WebAssembly to store the length of the dynamically
+              allocated memory block
+            '''
+            alloc = rt.find_function('alloc')
+            ptr_ptr = alloc(4)
+            size_ptr = alloc(4)
+            return [ptr_ptr, size_ptr]
+
+        _, response_media_schema = get_main_response_content_entry(operation)
+        # Check a single primitive is expected as response or if the result
+        # requires memory operations.
+        if not (response_media_schema.get('type', None) == 'integer' \
+            or response_media_schema.get('type', None) == 'float'):
+            # Allocate memory for the response.
+            result_ptrs = alloc_ptrs()
+
+        return primitive_args + ptrs, result_ptrs
+
+    def interpret_call_from(
+        self,
+        module_id,
+        function_name,
+        wasm_out_args,
+        wasm_output
+    ) -> Tuple[Any, CallData]:
         '''
         Find out the next function to be called in the deployment after the
         specified one.
@@ -208,7 +258,7 @@ class Deployment:
         response_media = get_main_response_content_entry(operation_obj)
 
         source_endpoint_result = parse_endpoint_result(
-            wasm_output, None, *response_media
+            wasm_out_args, wasm_output, None, *response_media
         )
 
         # Check if there still is stuff to do.
@@ -216,10 +266,11 @@ class Deployment:
             return source_endpoint_result, CallData.from_endpoint(next_endpoint, source_endpoint_result)
         return source_endpoint_result, None
 
-def parse_endpoint_result(func_result, memory, media_type, schema):
+def parse_endpoint_result(func_out_args, func_result, memory, media_type, schema):
     '''
     Based on media type (and schema if a structure like JSON), transform given
-    WebAssembly function output into the expected format.
+    WebAssembly function output (in the form of out-parameters in arg-list and
+    single primitive returned) into the expected format.
 
     ## Conversion
     - If the expected format is structured (e.g., JSON)
@@ -233,15 +284,20 @@ def parse_endpoint_result(func_result, memory, media_type, schema):
         temporary file and the filepath is returned.
     .
     '''
-    def read_bytes():
-        pointer = func_result[0]
-        length = func_result[1]
-        return bytes(wu.read_from_memory(pointer, length))
+    def read_out_bytes():
+        ptr_ptr = func_out_args[0]
+        length_ptr = func_out_args[1]
+        ptr = int.from_bytes(wu.read_from_memory(ptr_ptr, 4), byteorder='little')
+        length = int.from_bytes(wu.read_from_memory(length_ptr, 4), byteorder='little')
+        value = wu.read_from_memory(ptr, length)
+        as_bytes = bytes(value)
+        from hashlib import sha256; print("From Wasm:", sha256(as_bytes).hexdigest())
+        return as_bytes
 
     if media_type == 'application/json':
         try:
             # TODO: Validate structural JSON based on schema.
-            block = read_bytes()
+            block = read_out_bytes()
         except TypeError:
             # Assume the result is a Wasm primitive and interpret to JSON
             # string as is.
@@ -250,12 +306,13 @@ def parse_endpoint_result(func_result, memory, media_type, schema):
     if media_type == 'image/jpeg':
         # Write the image to a temp file and return the path.
         temp_img_path = 'temp_image.jpg'
-        block = read_bytes()
-        with open(temp_img_path, 'wb') as f:
-            f.write(block)
+        block = read_out_bytes()
+        bytes_array = np.frombuffer(block, dtype=np.uint8)
+        img = cv2.imdecode(bytes_array, cv2.IMREAD_COLOR)
+        cv2.imwrite(temp_img_path, img)
         return temp_img_path
     if media_type == 'application/octet-stream':
-        return read_bytes()
+        return read_out_bytes()
 
     raise NotImplementedError(f'Unsupported response media type "{media_type}"')
 
