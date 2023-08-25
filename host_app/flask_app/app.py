@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 import atexit
-import re
 from typing import Tuple
 from flask import Flask, Blueprint, jsonify, current_app, request, send_file
 from flask.helpers import get_debug_flag
@@ -22,16 +21,16 @@ import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 #from sentry_sdk.integrations import RequestsIntegration
 
-import wasm_utils.wasm_utils as wu
-from wasm_utils.wasm3_api import _wasm_rt, _wasm_env
+from host_app.wasm_utils import wasm_utils as wu
+from host_app.wasm_utils.wasm3_api import _wasm_rt, _wasm_env
 
-from utils.configuration import get_device_description, get_wot_td
-from utils.routes import endpoint_failed
-from utils.deployment import Deployment, ProgramCounterExceeded, RequestFailed
+from host_app.utils.configuration import get_device_description, get_wot_td
+from host_app.utils.routes import endpoint_failed
+from host_app.utils.deployment import Deployment, ProgramCounterExceeded, RequestFailed
 
 
-MODULE_DIRECTORY = '../modules'
-PARAMS_FOLDER = '../params'
+_MODULE_DIRECTORY = 'wasm-modules'
+_PARAMS_FOLDER = 'wasm-params'
 
 OUTPUT_LENGTH_BYTES = 32 // 8
 """
@@ -49,11 +48,9 @@ length in bytes of the memory to allocate and returns beginning address of the
 allocated block.
 """
 
-bp = Blueprint('thingi', os.environ["FLASK_APP"])
+bp = Blueprint(os.environ["FLASK_APP"], os.environ["FLASK_APP"])
 
 logger = logging.getLogger(os.environ["FLASK_APP"])
-
-from flask import Flask
 
 deployments = {}
 """
@@ -70,10 +67,13 @@ def create_app(*args, **kwargs) -> Flask:
     """
     app = Flask(os.environ["FLASK_APP"], *args, **kwargs)
 
+    # Create instance directory if it does not exist.
+    Path(app.instance_path).mkdir(exist_ok=True)
+
     app.config.update({
         'secret_key': 'dev',
-        'MODULE_FOLDER': MODULE_DIRECTORY,
-        'PARAMS_FOLDER': PARAMS_FOLDER,
+        'MODULE_FOLDER': Path(app.instance_path, _MODULE_DIRECTORY),
+        'PARAMS_FOLDER': Path(app.instance_path, _PARAMS_FOLDER),
     })
 
     # Load config from instance/ -directory
