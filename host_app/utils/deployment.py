@@ -14,7 +14,7 @@ import numpy as np
 import requests
 from flask import jsonify
 
-import wasm_utils.wasm_utils as wu
+import host_app.wasm_utils.wasm_utils as wu
 
 
 WASM_MEM_IMG_SHAPE = (480, 640, 3)

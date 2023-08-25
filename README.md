@@ -41,8 +41,7 @@ export SENTRY_DSN="<your sentry-dsn here>"
 
 Run with:
 ```
-cd host_app
-python __main__.py
+python -m host_app
 ```
 
 Now the supervisor should be accessible at [`http://localhost:5000/`](http://localhost:5000/).

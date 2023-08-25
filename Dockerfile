@@ -10,18 +10,24 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED 1
 
-# Copy needed files to app root for installing deps beforehand.
-COPY ["requirements.txt", "setup.py", "./"]
-
-RUN pip3 --disable-pip-version-check --no-cache-dir install -r requirements.txt
-
 # [Optional] Uncomment this section to install additional OS packages.
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends libgpiod2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the rest.
+## Install requirements using pip. This is done before copying the app, so that
+## requirements layer is cached. This way, if app code changes, only app code is
+## copied, and requirements are not re-installed.
+COPY requirements.txt /tmp/pip-tmp/
+RUN pip --disable-pip-version-check install -r /tmp/pip-tmp/requirements.txt && \
+    rm -rf /tmp/pip-tmp
+
+## Install self as editable (`-e`) module. In a long run it we should remove `COPY`
+## and only install app as a package.
 COPY . .
+RUN pip --disable-pip-version-check install -v -e .
+
+CMD ["python", "-m" "host_app"]
 
 FROM base AS run
 
@@ -32,11 +38,10 @@ ARG DEVICE_NAME
 
 ENV FLASK_APP ${DEVICE_NAME}
 
-# Move to correct directory for running the app (handles module paths imports).
-WORKDIR /app/host_app
-CMD ["python", "__main__.py"]
-
 FROM base AS vscode-devcontainer
+
+ARG SENTRY_ENVIRONMENT=devcontainer
+ENV SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT}
 
 ENV PYTHONDONTWRITEBYTECODE 1
 

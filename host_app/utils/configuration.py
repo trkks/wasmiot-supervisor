@@ -2,11 +2,19 @@ from pathlib import Path
 import json
 import os
 
-CONFIG_DIR = Path('../configs').absolute()
+INSTANCE_PATH = Path(os.environ.get('INSTANCE_PATH', Path.cwd()), 'instance').absolute()
+"""
+Path to the directory where the application instance is located.  This is
+typically the directory where the application is installed and is set by the
+`INSTANCE_PATH` environment variable. It should be writable by the application.
+"""
+CONFIG_DIR = Path(INSTANCE_PATH, 'configs').absolute()
+
 
 def get_remote_functions():
     with _check_open(CONFIG_DIR / 'remote_functions.json', {}) as f:
         return json.load(f)
+
 
 def get_modules():
     with _check_open(CONFIG_DIR / 'modules.json', {}) as f:

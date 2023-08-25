@@ -1,14 +1,15 @@
 #from .app import create_app, teardown_zeroconf
-import wasm_utils.wasm_utils as wa
 import os
 import threading
 
 # Have to setup environment variables before importing flask app
-os.environ.setdefault("FLASK_APP", "thingi")
+os.environ.setdefault("FLASK_APP", "host_app")
 os.environ.setdefault("FLASK_ENV", "development")
 os.environ.setdefault("FLASK_DEBUG", "1")
 
-import flask_app.app as flask_app
+from .utils.configuration import INSTANCE_PATH
+
+from host_app.flask_app import app as flask_app
 
 if __name__ == "__main__":
     print("Starting program")
@@ -21,7 +22,7 @@ if __name__ == "__main__":
     #                                 )
     #wasm_daemon.start()
 
-    app = flask_app.create_app()
+    app = flask_app.create_app(instance_path=INSTANCE_PATH)
 
     app.run(debug=True, host="0.0.0.0")
 

@@ -3,7 +3,7 @@ import threading
 
 import wasm3
 
-from utils.configuration import remote_functions, modules
+from host_app.utils.configuration import remote_functions, modules
 from . import wasm3_api as w3
 from .wasm3_api import env, rt
 

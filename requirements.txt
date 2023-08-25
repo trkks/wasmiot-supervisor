@@ -1,3 +1,4 @@
+python-dotenv
 flask
 zeroconf
 pyopenssl
@@ -11,5 +12,3 @@ sentry-sdk[flask]
 opencv-python-headless
 
 pywasm3
-
--e .
