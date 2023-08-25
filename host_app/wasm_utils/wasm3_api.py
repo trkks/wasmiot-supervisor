@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from contextvars import ContextVar
 
-from utils.configuration import remote_functions, modules
+from host_app.utils.configuration import remote_functions, modules
 
 RUNTIME_INIT_MEMORY = 15000
 from werkzeug.local import LocalProxy
