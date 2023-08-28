@@ -1,13 +1,11 @@
 import os
 import struct
 from time import sleep,time
-import wasm3
 import requests
 import cv2
-import numpy as np
 from contextvars import ContextVar
 
-from utils.configuration import remote_functions, modules
+import wasm_utils.wasm_utils as wu
 
 RUNTIME_INIT_MEMORY = 15000
 from werkzeug.local import LocalProxy
@@ -67,12 +65,18 @@ def m3_python_takeImage(out_ptr_ptr, out_size_ptr):
     from hashlib import sha256; print("Into Wasm:", sha256(data).hexdigest())
 
     alloc = rt.find_function("alloc")
-    out_ptr = alloc(len(data))
-    mem = rt.get_memory(0)
+    data_len = len(data)
+    out_ptr = alloc(data_len)
+
+    # Write the image to memory.
+    wu.write_to_memory(out_ptr, data)
+
+    # Write pointers to image pointer and length to memory assuming they both
+    # have 32 bits allocated.
     pointer_bytes = struct.pack("<I", out_ptr)
-    length_bytes = struct.pack("<I", len(data))
-    mem[out_ptr_ptr:out_ptr_ptr + 4] = pointer_bytes
-    mem[out_size_ptr:out_size_ptr + 4] = length_bytes
+    length_bytes = struct.pack("<I", data_len)
+    wu.write_to_memory(out_ptr_ptr, pointer_bytes)
+    wu.write_to_memory(out_size_ptr, length_bytes)
 
 def m3_python_rpcCall(func_name_ptr, func_name_size, data_ptr, data_size):
     mem = rt.get_memory(0)
