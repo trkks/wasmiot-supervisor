@@ -314,7 +314,6 @@ def parse_endpoint_result(func_out_args, func_result, media_type, schema) -> End
         length = int.from_bytes(wu.read_from_memory(length_ptr, 4), byteorder='little')
         value = wu.read_from_memory(ptr, length)
         as_bytes = bytes(value)
-        from hashlib import sha256; print("From Wasm:", sha256(as_bytes).hexdigest())
         return as_bytes
 
     if media_type == 'application/json':

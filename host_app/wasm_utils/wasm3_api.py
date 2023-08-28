@@ -54,15 +54,9 @@ def m3_python_takeImage(out_ptr_ptr, out_size_ptr):
     cam = cv2.VideoCapture(0)
     _, img = cam.read()
     cam.release()
-    #if not img:
-    #    return 1
-    #cv2.imwrite("temp_image.jpg", img)
-    #_, datatmp = cv2.imencode(".jpg", img)
-    # data = datatmp.tobytes()
-    with open("husky.jpg", "rb") as fp:
-        data = fp.read()
-
-    from hashlib import sha256; print("Into Wasm:", sha256(data).hexdigest())
+    cv2.imwrite("temp_image.jpg", img)
+    _, datatmp = cv2.imencode(".jpg", img)
+    data = datatmp.tobytes()
 
     alloc = rt.find_function("alloc")
     data_len = len(data)
