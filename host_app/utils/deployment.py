@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import reduce
 import json
 import os
+from pathlib import Path
 from typing import Any, Tuple
 
 import cv2
@@ -16,6 +17,20 @@ import numpy as np
 import wasm_utils.wasm_utils as wu
 from wasm_utils.wasm3_api import rt
 
+
+FILE_TYPES = [
+    "image/png",
+    "image/jpeg",
+    "image/jpg"
+]
+"""
+Media types that are considered files in chaining requests and thus will be
+sent with whatever the sender (requests-library) decides.
+"""
+
+EndpointArgs = str | list[str] | dict[str, Any] | None
+EndpointData = str | bytes | Path | None
+EndpointOutput = Tuple[EndpointArgs, EndpointData]
 
 @dataclass
 class Endpoint:
@@ -62,55 +77,64 @@ class CallData:
     url: str
     headers: dict[str, str]
     method: str
-    data: str | dict[str, Any]
+    files: dict[str, Any]
 
     @classmethod
     def from_endpoint(
         cls,
         endpoint: Endpoint,
-        args: Any,
-        data: str | dict[str, Any] | None = None
+        args: EndpointArgs = None,
+        data: EndpointData = None
     ):
         '''
-        Fill in the parameters for an endpoint with arguments and data.
+        Fill in the parameters and input for an endpoint with arguments and
+        data.
         '''
 
         # TODO: Fill in URL path.
+        target_url = endpoint.url.rstrip('/')
 
         # Fill in URL query.
-        if isinstance(args, str):
-            # Add the single parameter to the query.
+        if args:
+            if isinstance(args, str):
+                # Add the single parameter to the query.
 
-            # NOTE: Only one parameter is supported for now (WebAssembly currently
-            # does not seem to support tuple outputs (easily)). Also path should
-            # have been already filled and provided in the deployment phase.
-            param_name = endpoint.parameters[0]["name"]
-            param_value = args
-            query = f'?{param_name}={param_value}'
-        elif isinstance(args, list):
-            # Build the query in order.
-            query = reduce(
-                lambda acc, x: f'{acc}&{x[0]}={x[1]}',
-                zip(map(lambda y: y["name"], endpoint.parameters), args),
-                '?'
-            )
-        elif isinstance(args, dict):
-            # Build the query based on matching names.
-            query = reduce(
-                lambda acc, x: f'{acc}&{x[0]}={x[1]}',
-                ((y["name"], args[y["name"]]) for y in endpoint.parameters),
-                '?'
-            )
-        else:
-            raise NotImplementedError(f'Unsupported argument type "{type(args)}"')
+                # NOTE: Only one parameter is supported for now (WebAssembly currently
+                # does not seem to support tuple outputs (easily)). Also path should
+                # have been already filled and provided in the deployment phase.
+                param_name = endpoint.parameters[0]["name"]
+                param_value = args
+                query = f'?{param_name}={param_value}'
+            elif isinstance(args, list):
+                # Build the query in order.
+                query = reduce(
+                    lambda acc, x: f'{acc}&{x[0]}={x[1]}',
+                    zip(map(lambda y: y["name"], endpoint.parameters), args),
+                    '?'
+                )
+            elif isinstance(args, dict):
+                # Build the query based on matching names.
+                query = reduce(
+                    lambda acc, x: f'{acc}&{x[0]}={x[1]}',
+                    ((y["name"], args[y["name"]]) for y in endpoint.parameters),
+                    '?'
+                )
+            else:
+                raise NotImplementedError(f'Unsupported parameter type "{type(args)}"')
 
-        target_url = endpoint.url.rstrip('/') + query
+            target_url += query
 
         headers = {}
+        files = {}
         if endpoint.request_media_obj:
-            headers['Content-Type'] = endpoint.request_media_obj[0]
-
-        return cls(target_url, headers, endpoint.method, data)
+            if endpoint.request_media_obj[0] in FILE_TYPES:
+                # If the result media type is a file, it is sent as 'data' when
+                # the receiver reads 'files' from the request.
+                files = { 'data': open(data, 'rb') }
+                # No headers; requests will add them automatically.
+            else:
+                headers['Content-Type'] = endpoint.request_media_obj[0]
+        return cls(target_url, headers, endpoint.method, files)
 
 
 @dataclass
@@ -225,8 +249,7 @@ class Deployment:
         _, response_media_schema = get_main_response_content_entry(operation)
         # Check a single primitive is expected as response or if the result
         # requires memory operations.
-        if not (response_media_schema.get('type', None) == 'integer' \
-            or response_media_schema.get('type', None) == 'float'):
+        if not can_be_represented_as_wasm_primitive(response_media_schema):
             # Allocate memory for the response.
             result_ptrs = alloc_ptrs()
 
@@ -238,7 +261,7 @@ class Deployment:
         function_name,
         wasm_out_args,
         wasm_output
-    ) -> Tuple[Any, CallData]:
+    ) -> Tuple[EndpointOutput, CallData]:
         '''
         Find out the next function to be called in the deployment after the
         specified one.
@@ -258,15 +281,15 @@ class Deployment:
         response_media = get_main_response_content_entry(operation_obj)
 
         source_endpoint_result = parse_endpoint_result(
-            wasm_out_args, wasm_output, None, *response_media
+            wasm_out_args, wasm_output, *response_media
         )
 
         # Check if there still is stuff to do.
         if (next_endpoint := self._next_target(module_id, function_name)):
-            return source_endpoint_result, CallData.from_endpoint(next_endpoint, source_endpoint_result)
+            return source_endpoint_result, CallData.from_endpoint(next_endpoint, *source_endpoint_result)
         return source_endpoint_result, None
 
-def parse_endpoint_result(func_out_args, func_result, memory, media_type, schema):
+def parse_endpoint_result(func_out_args, func_result, media_type, schema) -> EndpointOutput:
     '''
     Based on media type (and schema if a structure like JSON), transform given
     WebAssembly function output (in the form of out-parameters in arg-list and
@@ -281,7 +304,7 @@ def parse_endpoint_result(func_out_args, func_result, memory, media_type, schema
     - If the expected format is binary (e.g. image or octet-stream), the result
     is expected to be a tuple of pointer and length
         - If the expected format is a file, the converted bytes are written to a
-        temporary file and the filepath is returned.
+        temporary file and the filepath in the form of `Path` is returned.
     .
     '''
     def read_out_bytes():
@@ -295,24 +318,22 @@ def parse_endpoint_result(func_out_args, func_result, memory, media_type, schema
         return as_bytes
 
     if media_type == 'application/json':
-        try:
-            # TODO: Validate structural JSON based on schema.
-            block = read_out_bytes()
-        except TypeError:
-            # Assume the result is a Wasm primitive and interpret to JSON
-            # string as is.
-            return json.dumps(func_result)
-        return block.decode('utf-8')
+        if can_be_represented_as_wasm_primitive(schema):
+            return json.dumps(func_result), None
+
+        # TODO: Validate structural JSON based on schema.
+        block = read_out_bytes()
+        return block.decode('utf-8'), None
     if media_type == 'image/jpeg':
         # Write the image to a temp file and return the path.
-        temp_img_path = 'temp_image.jpg'
+        temp_img_path = Path('temp_image.jpg')
         block = read_out_bytes()
         bytes_array = np.frombuffer(block, dtype=np.uint8)
         img = cv2.imdecode(bytes_array, cv2.IMREAD_COLOR)
-        cv2.imwrite(temp_img_path, img)
-        return temp_img_path
+        cv2.imwrite(temp_img_path.as_posix(), img)
+        return None, temp_img_path
     if media_type == 'application/octet-stream':
-        return read_out_bytes()
+        return None, read_out_bytes()
 
     raise NotImplementedError(f'Unsupported response media type "{media_type}"')
 
@@ -342,9 +363,19 @@ def get_operation(path_obj) -> Tuple[str, dict[str, Any]]:
 
 def get_main_response_content_entry(operation_obj):
     '''
-    Dig out the one and only one _response_ media type and matching object from
-    the OpenAPI v3.1.0 operation object's content field.
+    Dig out the one and only one _response_ __media type__ and matching __schema
+    object__ from under the OpenAPI v3.1.0 operation object's content field.
 
     NOTE: 200 is the only assumed response code.
     '''
-    return assert_single_pop(operation_obj['responses']['200']['content'].items())
+    media_type, media_type_object = assert_single_pop(operation_obj['responses']['200']['content'].items())
+    return media_type, media_type_object.get('schema', {})
+
+
+def can_be_represented_as_wasm_primitive(schema) -> bool:
+    '''
+    Return True if the OpenAPI schema object can be represented as a WebAssembly
+    primitive.
+    '''
+    type_ = schema.get('type', None)
+    return type_ == 'integer' or type_ == 'float'

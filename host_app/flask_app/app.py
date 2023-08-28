@@ -56,14 +56,6 @@ length in bytes of the memory to allocate and returns beginning address of the
 allocated block.
 """
 
-FILE_TYPES = [
-    "image/png",
-    "image/jpeg",
-    "image/jpg"
-]
-"""Types of "WebAssembly outputs" that are considered files in chaining
-requests."""
-
 @dataclass
 class FetchFailures(Exception):
     """Raised when fetching modules or their attached files fails"""
@@ -121,14 +113,17 @@ def do_wasm_work(entry):
 
     deployment = deployments[entry.deployment_id]
 
-    wasm_args, wasm_out_args = deployment.interpret_args_for(
-        module.id,
-        entry.function_name,
-        entry.request_args,
-        entry.request_files
-    )
+    try:
+        wasm_args, wasm_out_args = deployment.interpret_args_for(
+            module.id,
+            entry.function_name,
+            entry.request_args,
+            entry.request_files
+        )
 
-    raw_output = module.run_function(entry.function_name, wasm_args + wasm_out_args)
+        raw_output = module.run_function(entry.function_name, wasm_args + wasm_out_args)
+    except Exception as err:
+        return str(err)
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
@@ -141,22 +136,14 @@ def do_wasm_work(entry):
         # No sub-calls needed.
         return this_result
 
-    files = None
-    data = None
-
-    # If the result media type is a file, the filepath should be in the
-    # data-field, where it will be read and sent from.
-    if next_call.headers.get("Content-Type", None) in FILE_TYPES:
-        files = { 'data': open(next_call.data, 'rb') }
-    else:
-        data = next_call.data
+    headers = next_call.headers
+    files = next_call.files
 
     sub_response = getattr(requests, next_call.method)(
         next_call.url,
         timeout=10,
-        data=data,
         files=files,
-        headers=next_call.headers,
+        headers=headers,
     )
 
     return sub_response.json()["resultUrl"]
