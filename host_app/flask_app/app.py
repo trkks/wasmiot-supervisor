@@ -29,8 +29,8 @@ import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 
-import wasm_utils.wasm_utils as wu
-from wasm_utils.wasm3_api import _wasm_rt, _wasm_env
+from wasm_utils.wasm import wasm_modules, wasm_runtime
+from wasm_utils.wasm_api import MLModel, ModuleConfig
 
 from utils.configuration import get_device_description, get_wot_td
 from utils.routes import endpoint_failed
@@ -74,7 +74,7 @@ other devices and calling their functions
 
 @dataclass
 class RequestEntry():
-    '''Describes what happened with a request'''
+    '''Describes a request of WebAssembly execution'''
     request_id: str = field(init=False)
     '''Unique identifier for this request'''
     deployment_id: str
@@ -82,7 +82,7 @@ class RequestEntry():
     function_name: str
     method: str
     request_args: Any
-    request_files: list[str]
+    request_files: list[str] # List of `Path`s
     work_queued_at: datetime
     result: Any = None
 
@@ -106,30 +106,29 @@ def do_wasm_work(entry):
     not required.
     '''
 
-    # Setup Wasm runtime.
-    module = wu.wasm_modules[entry.module_name]
-    _wasm_rt.set(module.runtime)
-    _wasm_env.set(module.env)
-
     deployment = deployments[entry.deployment_id]
 
     try:
-        wasm_args, wasm_out_args = deployment.interpret_args_for(
-            module.id,
+        print(f'Preparing Wasm module "{entry.module_name}"...')
+        module, wasm_args, wasm_out_args = deployment.interpret_args_for(
+            entry.module_name,
             entry.function_name,
             entry.request_args,
             entry.request_files
         )
 
+        print(f'Running Wasm function "{entry.function_name}"...')
         raw_output = module.run_function(entry.function_name, wasm_args + wasm_out_args)
+        print(f'Result: {raw_output}')
     except Exception as err:
+        print(f"Error running WebAssembly function '{entry.function_name}':", err)
         return str(err)
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
     # the whole chain).
     this_result, next_call = deployment.interpret_call_from(
-        module.id, entry.function_name, wasm_out_args, raw_output
+        module.name, entry.function_name, wasm_out_args, raw_output
     )
 
     if not isinstance(next_call, CallData):
@@ -342,6 +341,9 @@ def run_module_function(deployment_id, module_name, function_name):
     if not deployment_id in deployments:
         return endpoint_failed(request, 'deployment does not exist', 404)
 
+    if module_name not in deployments[deployment_id].modules:
+        return endpoint_failed(request, f"module {module_name} not found for this deployment")
+
     # Write input data to filesystem.
     input_file_paths = []
     if (input_data_file := request.files.get('data')):
@@ -350,7 +352,7 @@ def run_module_function(deployment_id, module_name, function_name):
             input_data_file.filename
         )
         input_data_file.save(input_file_path)
-        input_file_paths.append(input_file_path)
+        input_file_paths.append(Path(input_file_path))
 
     entry = RequestEntry(
         deployment_id,
@@ -358,7 +360,7 @@ def run_module_function(deployment_id, module_name, function_name):
         function_name,
         request.method,
         request.args,
-        input_file_paths,
+        list(map(str, input_file_paths)),
         datetime.now()
     )
 
@@ -369,6 +371,8 @@ def run_module_function(deployment_id, module_name, function_name):
         # Send data to worker thread to handle non-blockingly.
         wasm_queue.put(entry)
 
+    # Return a link to this request's result (which could link further until
+    # some useful value is found).
     return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
 
 @bp.route('/modules/<module_name>/<function_name>' , methods=["POST"])
@@ -384,18 +388,19 @@ def run_module_function_raw_input(module_name, function_name):
     """
 
     # Setup variables needed for initialization and running modules.
-    module = wu.wasm_modules.get(module_name, None)
-    if not module or not function_name:
+    module_config = wasm_modules.get(module_name, None)
+    if not module_config or not function_name:
         return endpoint_failed(request, "not found")
 
     input_data = request.data
 
-    wu.load_module(module)
+    # wu.load_module(module)
 
     # Allocate pointer to a suitable block of memory in Wasm and write the
     # input there.
     try:
-        input_ptr = wu.run_function("alloc", [len(input_data)])
+        module = wasm_runtime.get_or_load_module(module_config)
+        input_ptr = module.run_function(ALLOC_NAME, [len(input_data)])
     except Exception as err:
         return endpoint_failed(
             request,
@@ -403,14 +408,14 @@ def run_module_function_raw_input(module_name, function_name):
         )
 
     # Copy the input data into the allocated memory block.
-    write_err = wu.write_to_memory(input_ptr, input_data)
+    write_err = wasm_runtime.write_to_memory(input_ptr, input_data)
     if write_err is not None:
         return endpoint_failed(request, write_err)
 
     # Reserve memory for WebAssembly to write the length of the generated
     # output, so it can be read later and used in reading the _actual_ result.
     try:
-        output_len_ptr = wu.run_function("alloc", [OUTPUT_LENGTH_BYTES])
+        output_len_ptr = module.run_function(ALLOC_NAME, [OUTPUT_LENGTH_BYTES])
     except Exception as err:
         return endpoint_failed(
             request,
@@ -432,7 +437,7 @@ def run_module_function_raw_input(module_name, function_name):
             f"Running WebAssembly function '{function_name}' with params: ({', '.join((str(i) for i in input_params))})"
         )
 
-        output_ptr = wu.run_function(function_name, input_params)
+        output_ptr = module.run_function(function_name, input_params)
     except Exception as err:
         return endpoint_failed(
             request,
@@ -442,7 +447,7 @@ def run_module_function_raw_input(module_name, function_name):
     # Get the one unsigned int (4-byte) as little-endian like the Wasm memory
     # should be according to:
     # https://webassembly.org/docs/portability/
-    output_len_data, read_err = wu.read_from_memory(output_len_ptr, OUTPUT_LENGTH_BYTES)
+    output_len_data, read_err = wasm_runtime.read_from_memory(output_len_ptr, OUTPUT_LENGTH_BYTES, module_name)
     if read_err is not None:
         return endpoint_failed(request, read_err)
 
@@ -461,7 +466,7 @@ def run_module_function_raw_input(module_name, function_name):
 
     # Read result from memory and pass forward TODO: Follow the deployment
     # sequence and instructions.
-    output_data, read_err = wu.read_from_memory(output_ptr, output_len)
+    output_data, read_err = wasm_runtime.read_from_memory(output_ptr, output_len, module_name)
     if read_err is not None:
         return endpoint_failed(request, read_err)
 
@@ -490,24 +495,29 @@ def run_ml_module(module_name = None):
     if not module_name:
         return jsonify({'status': 'error', 'result': 'module not found'})
 
-    module = wu.wasm_modules[module_name]
-    #wu.rt = module.runtime
-    #wu.env = module.env
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
 
-    _wasm_rt.set(module.runtime)
-    _wasm_env.set(module.env)
+    module = wasm_runtime.get_or_load_module(module_config)
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
 
     file = request.files['data']
     if not file:
         return jsonify({'status': 'error', 'result': "file 'data' not in request"})
+    data = file.read()
 
-    res = wu.run_ml_model(module_name, file)
+    res = module.run_ml_inference(module_config.ml_model, data)
+
+    # TODO: remove the following direct response once the deployment id is included in the request
+    return jsonify({ 'result': res })
 
     # TODO: Use a common error-handling function for all endpoints.
     try:
         # FIXME This very is ridiculous...
         resp_media_type, resp_schema = list(
-            module.description['paths']['/ml/{{module}}']['post']['responses']['200']['content'].items()
+            module_config.description['paths'][f'/ml/{{module}}']['post']['responses']['200']['content'].items()
         )[0]
         # TODO: Use the deployment-ID from the request.
         deployment_id = list(deployments.keys())[0]
@@ -525,12 +535,20 @@ def upload_ml_model(module_name = None):
     if not file:
         return jsonify({'status': 'error', 'result': "file 'model' not in request"})
 
-    path = wu.wasm_modules[module_name].model_path
-    if not path:
-        path = Path(current_app.config['PARAMS_FOLDER']) / module_name / 'model'
-        wu.wasm_modules[module_name].model_path = path
+    path = Path(current_app.config['PARAMS_FOLDER']) / module_name / 'model'
     path.parent.mkdir(exist_ok=True, parents=True)
     file.save(path)
+
+    model = MLModel(path)
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
+    module_config.ml_model = model
+
+    module = wasm_runtime.get_or_load_module(module_config)
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
+
     return jsonify({'status': 'success'})
 
 @bp.route('/img/<module_name>/<function_name>', methods=['POST'])
@@ -538,7 +556,13 @@ def run_img_function(module_name = None, function_name = None):
     """Image comes as a string of bytes (in file attribute)"""
     if not module_name or not function_name:
         return jsonify({'result': 'function of module not found'})
-    wu.load_module(wu.wasm_modules[module_name])
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
+    module = wasm_runtime.get_or_load_module(module_config)
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
+
     file = request.files['img']
     img = file.read()
     print(type(img))
@@ -550,7 +574,14 @@ def run_img_function(module_name = None, function_name = None):
     shape = (480, 640, 3)
     #img_bytes = np.array(img).flatten().tobytes()
     img_bytes = img
-    gs_img_bytes = wu.run_data_function(function_name, wu.wasm_modules[module_name].data_ptr, img_bytes)
+
+    # FIXME: What is the correct value for data_ptr? And where should it be set?
+    gs_img_bytes = module.run_data_function(
+        function_name=function_name,
+        data_ptr_function_name=module_config.data_ptr_function_name,
+        data=img_bytes,
+        params=[]
+    )
     result = np.array(gs_img_bytes).reshape((shape))
     cv2.imwrite("../output/gsimg2.png", result)
     return jsonify({'status': 'success'})
@@ -560,7 +591,13 @@ def run_grayscale(module_name = None, function_name = None):
     """Image comes as file"""
     if not module_name or not function_name:
         return jsonify({'result': 'function of module not found'})
-    wu.load_module(wu.wasm_modules[module_name])
+    module_config = wasm_modules.get(module_name, None)
+    if module_config is None:
+        return endpoint_failed(request, f"module {module_name} not found")
+    module = wasm_runtime.get_or_load_module(module_config)
+    if module is None:
+        return endpoint_failed(request, f"module {module_name} could not be loaded")
+
     file = request.files['img']
     #file.save('image.png')
     filebytes = np.fromstring(file.read(), np.uint8)
@@ -568,7 +605,14 @@ def run_grayscale(module_name = None, function_name = None):
     #print(img.shape)
     shape = img.shape
     img_bytes = np.array(img).flatten().tobytes()
-    gs_img_bytes = wu.run_data_function(function_name, wu.wasm_modules[module_name].data_ptr, img_bytes)
+
+    # FIXME: What is the correct value for data_ptr? And where should it be set?
+    gs_img_bytes = module.run_data_function(
+        function_name=function_name,
+        data_ptr_function_name=module_config.data_ptr_function_name,
+        data=img_bytes,
+        params=[]
+    )
     result = np.array(gs_img_bytes).reshape((shape))
     cv2.imwrite("gsimg.png", result)
     return jsonify({'status': 'success'})
@@ -585,7 +629,7 @@ def get_deployment():
         return jsonify({'message': 'No modules listed'})
 
     try:
-        fetch_modules(modules)
+        module_configs = fetch_modules(modules)
     except FetchFailures as err:
         print(err)
         return endpoint_failed(
@@ -596,8 +640,9 @@ def get_deployment():
         )
 
     deployments[data["deploymentId"]] = Deployment(
+        wasm_runtime,
         data["instructions"],
-        { m["id"]: wu.wasm_modules[m["name"]] for m in modules }
+        module_configs,
     )
 
     # If the fetching did not fail (that is, crash), return success.
@@ -626,11 +671,13 @@ def upload_params():
     file.save(os.path.join(current_app.config['PARAMS_FOLDER'], filename))
     return jsonify({'status': 'success'})
 
-def fetch_modules(modules):
+def fetch_modules(modules) -> list[ModuleConfig]:
     """
-    Fetch listed Wasm-modules and save them and their details.
+    Fetch listed Wasm-modules, save them and their details and return data that
+    can be used to instantiate modules for execution later.
     :modules: list of structs of modules to download
     """
+    configs = []
     for module in modules:
         # Make all the requests at once.
         res_bin = requests.get(module["urls"]["binary"], timeout=5)
@@ -655,24 +702,31 @@ def fetch_modules(modules):
         with open(module_path, 'wb') as f:
             f.write(res_bin.content)
 
-        # "Save downloaded module to module directory"
-        wu.wasm_modules[module["name"]] = wu.WasmModule(
-            id=module["id"],
-            name=module["name"],
-            path=module_path,
-            description=res_desc.json(),
-        )
-        # "Add module details to module config"
-
         # Add other listed files related to the module.
-
+        data_files = []
         for res_other in res_others:
             # FIXME Assuming only one url and that it is for the model.
-            other_path = wu.wasm_modules[module['name']].model_path
-            if not other_path:
-                other_path = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
-                wu.wasm_modules[module['name']].model_path = other_path
+            other_path = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
 
             other_path.parent.mkdir(exist_ok=True, parents=True)
             with open(other_path, 'wb') as f:
                 f.write(res_other.content)
+
+            data_files.append(other_path)
+
+            # update the module configuration with the model path
+            # TODO: Does having a "model path" attribute in the module
+            # config have direct benefits over "generic" files list?
+            # new_module_config.ml_model = MLModel(other_path)
+
+        # Save downloaded module's details.
+        new_module_config = ModuleConfig(
+            id=module["id"],
+            name=module["name"],
+            path=module_path,
+            description=res_desc.json(),
+            data_files=data_files,
+        )
+        configs.append(new_module_config)
+
+    return configs
