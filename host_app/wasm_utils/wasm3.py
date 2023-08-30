@@ -86,6 +86,10 @@ class Wasm3Module(WasmModule):
     """Wasm3 module class."""
     def __init__(self, config: ModuleConfig, runtime: Wasm3Runtime) -> None:
         super().__init__(config, runtime)
+        # Linking is performed via a module instance, so loading needs to be
+        # done first.
+        self._load_module()
+        self._link_remote_functions()
 
     def _get_function(self, function_name: str) -> Optional[wasm3.Function]:
         """Get a function from the Wasm module. If the function is not found, return None."""
@@ -159,7 +163,7 @@ class Wasm3Module(WasmModule):
         self._instance.link_function(communication, "rpcCall", "v(*iii)", rpc_call)
 
         # peripheral
-        self._instance.link_function(camera, "takeImage", "v(i)", TakeImage(self.runtime).function)
+        self._instance.link_function(camera, "takeImage", "v(*i)", TakeImage(self).function)
         self._instance.link_function(dht, "getTemperature", "f()", python_get_temperature)
         self._instance.link_function(dht, "getHumidity", "f()", python_get_humidity)
 

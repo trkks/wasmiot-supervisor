@@ -2,6 +2,7 @@
 
 import os
 import platform
+import struct
 from time import sleep, time
 from typing import Any, Callable
 
@@ -10,7 +11,7 @@ import numpy as np
 import requests
 
 from utils.configuration import remote_functions
-from wasm_utils.wasm_api import WasmRuntime
+from wasm_utils.wasm_api import WasmRuntime, WasmModule
 
 if platform.system() != "Windows":
     import adafruit_dht
@@ -96,20 +97,44 @@ class Print(RemoteFunction):
 
 
 class TakeImage(RemoteFunction):
-    """Remote function generator for printing."""
+    """Remote function generator for capturing image with attached camera."""
+
+    def __init__(self, module: WasmModule) -> None:
+        super().__init__(module.runtime)
+        def alloc(nbytes):
+            return module.runtime.run_function("alloc", [nbytes])
+        self.alloc = alloc
+
     @property
-    def function(self) -> Callable[[int], None]:
-        def python_take_image(data_ptr: int) -> None:
-            """Take an image and write it to the specified memory location at the given runtime."""
+    def function(self) -> Callable[[Callable[[int], int], int, int], None]:
+        def python_take_image(out_ptr_ptr, out_size_ptr):
+            """
+            Take an image and write it to memory at the given runtime using the given module.
+
+            Store the pointer to the image in out_ptr_ptr and the size as in
+            out_size_ptr both in 32bits LSB.
+            """
             cam = cv2.VideoCapture(0)
             _, img = cam.read()
             cam.release()
 
-            data = np.array(img).flatten().tobytes()
+            _, datatmp = cv2.imencode(".jpg", img)
+            data = datatmp.tobytes()
+            data_len = len(data)
+            data_ptr = self.alloc(data_len)
             self.runtime.write_to_memory(data_ptr, data)
 
-        return python_take_image
+            # Write the image to memory.
+            self.runtime.write_to_memory(data_ptr, data)
 
+            # Write pointers to image pointer and length to memory assuming they both
+            # have 32 bits allocated.
+            pointer_bytes = struct.pack("<I", data_ptr)
+            length_bytes = struct.pack("<I", data_len)
+            self.runtime.write_to_memory(out_ptr_ptr, pointer_bytes)
+            self.runtime.write_to_memory(out_size_ptr, length_bytes)
+
+        return python_take_image
 
 class RpcCall(RemoteFunction):
     """Remote function generator for RPC calls."""

@@ -205,10 +205,10 @@ You can find another test image in the [wasi-inference repository in 'testdata']
     - From the commandline (replace DEPLOYMENT_ID with the one in your listing):
 
         ```bash
-        curl http://localhost:5000/DEPLOYMENT_ID/modules/fibonacci/fibo?param1=12
+        curl http://localhost:5000/DEPLOYMENT_ID/modules/fibonacci/fibo?iterations=12
         ```
 
-        The answer should be: [233, 0, 0, 0]
+        The answer should contain a link which directs to where the `result` field is 233.
 
 - For testing ML inference, create a new module with the orchestrator (Module creation):
     - Name: `mobilenet`
@@ -218,28 +218,21 @@ You can find another test image in the [wasi-inference repository in 'testdata']
     - Select the module: choose `mobilenet`
     - File to upload: choose `optimized-wasi.wasm` file (download link: [optimized-wasi.wasm](https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/optimized-wasi.wasm))
     - Select `Submit`
+- Push the ML model to the orchestrator (Module upload):
+    - Select the module: choose `mobilenet`
+    - File to upload: choose `mobilenet_v2_1.4_224_frozen.pb` file (download link: [mobilenet_v2_1.4_224_frozen.pb](https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/mobilenet_v2_1.4_224_frozen.pb))
+    - Select `Submit`
 - Create a new deployment manifest (Deployment manifest creation):
     - Name: `mobilenet-dep`
-    - Procedure-call sequence: select "Use my-device for mobilenet:alloc" (have only the 1 item in the sequence)
+    - Procedure-call sequence: select "Use my-device for mobilenet:infer_from_ptrs" (have only the 1 item in the sequence)
     - Select `Convert to JSON` and `Submit`
 - Deploy the module to the device (Deployment of deployment manifests):
     - Select the deployment manifest: choose `mobilenet-dep`
     - Select `Deploy!`
-- Upload the ML model to the device using the command line:
-
-    ```bash
-    # first download the model from GitHub and then upload it to the device
-    curl -L https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/mobilenet_v2_1.4_224_frozen.pb > mobilenet_v2_1.4_224_frozen.pb
-    curl -F model=@./mobilenet_v2_1.4_224_frozen.pb http://localhost:5000/ml/model/mobilenet
-    ```
-
-- Test the fibonacci deployment from the command line:
-
-    ```bash
-    # First download the test image from GitHub and run the inference
-    curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg > husky.jpeg
-    curl -F data=@./husky.jpeg http://localhost:5000/ml/mobilenet
-    ```
+- Test the ML deployment (Execution):
+    - Select the deployment: choose `mobilenet-dep`
+    - From the appearing file-input, upload `husky.jpg` (download link: [husky.jpg](https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg))
+    - Select `Execute!`
 
     The inference result should be 250.
 

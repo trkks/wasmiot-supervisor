@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeAlias
 
 ByteType: TypeAlias = bytes | bytearray
@@ -74,13 +75,16 @@ class WasmModule:
     FunctionType = Callable[..., Any]
 
     def __init__(self, config: ModuleConfig, runtime: WasmRuntime) -> None:
+        self._id = config.id
         self._name = config.name
         self._path = config.path
         self._runtime: WasmRuntime = runtime
         self._functions: Optional[List[str]] = None
 
-        self._load_module()
-        self._link_remote_functions()
+    @property
+    def id(self) -> str:
+        """Get the id of the Wasm module."""
+        return self._id
 
     @property
     def name(self) -> str:
@@ -229,9 +233,11 @@ class WasmModule:
 @dataclass
 class ModuleConfig:
     """Dataclass for module name and file location."""
+    id: str
     name: str
     path: str
     description: Any = field(default_factory=dict)
+    data_files: List[Path] = field(default_factory=list)
     ml_model: Optional[MLModel] = None
     data_ptr_function_name: str = "get_img_ptr"
 

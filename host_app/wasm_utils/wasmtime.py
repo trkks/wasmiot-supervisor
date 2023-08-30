@@ -133,7 +133,6 @@ class WasmtimeRuntime(WasmRuntime):
         sys = "sys"
         communication = "communication"
         dht = "dht"
-        camera = "camera"
 
         i32: ValType = ValType.i32()
         f32: ValType = ValType.f32()
@@ -150,8 +149,6 @@ class WasmtimeRuntime(WasmRuntime):
         self.linker.define_func(communication, "rpcCall", FuncType([i32, i32, i32, i32], []), rpc_call)
 
         # peripheral
-        take_image = TakeImage(self).function
-        self.linker.define_func(camera, "takeImage", FuncType([i32], []), take_image)
         self.linker.define_func(dht, "getTemperature", FuncType([], [f32]), python_get_temperature)
         self.linker.define_func(dht, "getHumidity", FuncType([], [f32]), python_get_humidity)
 
@@ -162,6 +159,8 @@ class WasmtimeModule(WasmModule):
         self._module: Optional[Module] = None
         self._instance: Optional[Instance] = None
         super().__init__(config, runtime)
+        self._link_remote_functions()
+        self._load_module()
 
     def get_memory(self) -> Optional[Memory]:
         """Get the Wasmtime memory."""
@@ -244,8 +243,17 @@ class WasmtimeModule(WasmModule):
         self._instance = self.runtime.linker.instantiate(self.runtime.store, module)
 
     def _link_remote_functions(self) -> None:
-        """Link some remote functions to the Wasmtime module."""
-        # Note: with Wasmtime the functions have been linked to the runtime, not the module
+        """Link some remote functions to the Wasmtime module.
+
+        Note: with Wasmtime the standalone functions that do not require
+        allocating WebAssembly memory have been linked to the runtime, not the module, in advance
+        """
+        camera = "camera"
+
+        i32: ValType = ValType.i32()
+
+        take_image = TakeImage(self).function
+        self.runtime.linker.define_func(camera, "takeImage", FuncType([i32, i32], []), take_image)
 
 
 arg_types = {
