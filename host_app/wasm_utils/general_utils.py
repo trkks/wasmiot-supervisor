@@ -10,8 +10,8 @@ import cv2
 import numpy as np
 import requests
 
-from utils.configuration import remote_functions
-from wasm_utils.wasm_api import WasmRuntime, WasmModule
+from host_app.utils.configuration import remote_functions
+from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule
 
 if platform.system() != "Windows":
     import adafruit_dht

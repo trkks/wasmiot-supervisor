@@ -15,6 +15,7 @@ import threading
 from typing import Any, Tuple
 
 import atexit
+from typing import Tuple
 from flask import Flask, Blueprint, jsonify, current_app, request, send_file
 from flask.helpers import get_debug_flag
 from werkzeug.serving import get_sockaddr, select_address_family
@@ -29,16 +30,16 @@ import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 
-from wasm_utils.wasm import wasm_modules, wasm_runtime
-from wasm_utils.wasm_api import MLModel, ModuleConfig
+from host_app.wasm_utils.wasm import wasm_modules, wasm_runtime
+from host_app.wasm_utils.wasm_api import MLModel, ModuleConfig
 
-from utils.configuration import get_device_description, get_wot_td
-from utils.routes import endpoint_failed
-from utils.deployment import Deployment, CallData
+from host_app.utils.configuration import get_device_description, get_wot_td
+from host_app.utils.routes import endpoint_failed
+from host_app.utils.deployment import Deployment, CallData
 
 
-MODULE_DIRECTORY = '../modules'
-PARAMS_FOLDER = '../params'
+_MODULE_DIRECTORY = 'wasm-modules'
+_PARAMS_FOLDER = 'wasm-params'
 
 OUTPUT_LENGTH_BYTES = 32 // 8
 """
@@ -62,7 +63,7 @@ class FetchFailures(Exception):
     errors: list[requests.Response]
 
 
-bp = Blueprint('thingi', os.environ["FLASK_APP"])
+bp = Blueprint(os.environ["FLASK_APP"], os.environ["FLASK_APP"])
 
 logger = logging.getLogger(os.environ["FLASK_APP"])
 
@@ -171,10 +172,13 @@ def create_app(*args, **kwargs) -> Flask:
     '''
     app = Flask(os.environ["FLASK_APP"], *args, **kwargs)
 
+    # Create instance directory if it does not exist.
+    Path(app.instance_path).mkdir(exist_ok=True)
+
     app.config.update({
         'secret_key': 'dev',
-        'MODULE_FOLDER': MODULE_DIRECTORY,
-        'PARAMS_FOLDER': PARAMS_FOLDER,
+        'MODULE_FOLDER': Path(app.instance_path, _MODULE_DIRECTORY),
+        'PARAMS_FOLDER': Path(app.instance_path, _PARAMS_FOLDER),
     })
 
     # Load config from instance/ -directory

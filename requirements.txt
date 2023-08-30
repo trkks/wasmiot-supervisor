@@ -1,3 +1,4 @@
+python-dotenv
 flask
 zeroconf
 pyopenssl
@@ -15,5 +16,3 @@ wasmtime
 
 # Uncomment the following when using Raspberry Pi (required by adafruit)
 # RPi.GPIO
-
--e .

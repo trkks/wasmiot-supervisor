@@ -2,7 +2,7 @@
 ## Requirements
 - [Python3](https://www.python.org/downloads/)
 - Linux (for Windows users [WSL](https://learn.microsoft.com/en-us/windows/wsl/install))
-  - `apt install gcc` for installing `pywasm3`
+  - `apt install gcc python3-dev` for installing `pywasm3`
 
 ### raspberry pi
 
@@ -57,8 +57,7 @@ export FLASK_APP=my-device
 
 Run with:
 ```
-cd host_app
-python __main__.py
+python -m host_app
 ```
 
 Now the supervisor should be accessible at [`http://localhost:5000/`](http://localhost:5000/).
@@ -91,7 +90,7 @@ curl \
         "modules":[
             {
                 "id":"0",
-                "name":"fibo",
+                "name":"fiboMod",
                 "urls":{
                     "binary":"http://localhost:8000/wasm-binaries/wasm32-unknown-unknown/fibo.wasm",
                     "description":"http://localhost:8000/fibo/open-api-description.json",
@@ -99,19 +98,49 @@ curl \
                 }
             }
         ],
-        "instructions": [
-            {
-                "sequence": 0,
-                "to": null
+        "instructions": {
+            "modules": {
+                "fiboMod": {
+                    "fibo": {
+                        "paths": {
+                            "": {
+                                "get": {
+                                    "parameters": [{
+                                        "name": "iterations",
+                                        "in": "query",
+                                        "required": true,
+                                        "schema": {
+                                            "type": "integer",
+                                            "format": "int64"
+                                        }
+                                    }],
+                                    "responses": {
+                                        "200": {
+                                            "content": {
+                                                "application/json": {
+                                                    "schema": {
+                                                        "type": "integer",
+                                                        "format": "int64"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "to": null
+                    }
+                }
             }
-        ]
+        }
     }' \
     http://localhost:5000/deploy
 ```
 
 Then on success, you can count the (four-byte representation of) 7th Fibonacci number with the command:
 ```bash
-curl localhost:5000/0/modules/fibo/fibo?iterations=7
+curl localhost:5000/0/modules/fiboMod/fibo?iterations=7
 ```
 ## Testing ML deployment
 
@@ -236,6 +265,12 @@ You can find another test image in the [wasi-inference repository in 'testdata']
 
     The inference result should be 250.
 
+- The ML deployment can also be tested from the command line:
+    ```bash
+    # First download the test image from GitHub and run the inference
+    curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg > husky.jpeg
+    curl -F data=@./husky.jpeg http://localhost:5000/DEPLOYMENT_ID/modules/mobilenet/infer_from_ptrs
+    ```
 ## Devcontainer
 Use VSCode for starting in container. NOTE: Be sure the network it uses is
 created i.e., before starting the container run:

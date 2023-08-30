@@ -13,7 +13,7 @@ from typing import Any, Tuple
 import cv2
 import numpy as np
 
-from wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig
+from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig
 
 
 FILE_TYPES = [
@@ -358,7 +358,7 @@ def assert_single_pop(iterable) -> Any | None:
     '''
     iterator = iter(iterable)
     item = next(iter(iterator), None)
-    assert item and not next(iterator, None), 'Only one item expected'
+    assert item and next(iterator, None) is None, 'Only one item expected'
     return item
 
 def get_operation(path_obj) -> Tuple[str, dict[str, Any]]:

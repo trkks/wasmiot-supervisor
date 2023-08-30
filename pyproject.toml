@@ -1,0 +1,26 @@
+[project]
+name = "host-app"
+description = "WasmIoT Supervisor PoC in python 3"
+license = {text = "MIT"}
+authors = [
+  { name="University of Jyväskylä" },
+  # { name="Name", email="name@jyu.fi" }
+]
+requires-python = ">=3.11"
+dynamic = ["dependencies", "version"]
+
+[project.urls]
+repository = "https://github.com/LiquidAI-project/wasmiot-supervisor"
+
+[tool.setuptools]
+packages = ["host_app"]
+
+[tool.setuptools_scm]
+write_to = "host_app/_version.py"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[build-system]
+requires = ["setuptools>=61", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"

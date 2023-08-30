@@ -3,9 +3,9 @@
 from os import environ
 from typing import Dict
 
-from wasm_utils.wasm_api import ModuleConfig
-from wasm_utils.wasmtime import WasmtimeRuntime
-from wasm_utils.wasm3 import Wasm3Runtime
+from host_app.wasm_utils.wasm_api import ModuleConfig
+from host_app.wasm_utils.wasmtime import WasmtimeRuntime
+from host_app.wasm_utils.wasm3 import Wasm3Runtime
 
 
 environ.setdefault("WASM_RUNTIME", "wasmtime")

@@ -1,7 +1,7 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
 // https://github.com/microsoft/vscode-dev-containers/tree/v0.238.0/containers/python-3
 {
-	"name": "Python 3",
+	"name": "WasmIoT-supervisor",
 	"image": "ghcr.io/liquidai-project/wasmiot-supervisor:devcontainer",
 	"build": {
 		"cacheFrom": "ghcr.io/liquidai-project/wasmiot-supervisor:devcontainer",
@@ -18,12 +18,17 @@
 	// Put the devcontainer into network shared by orchestrator's devcontainer.
 	"runArgs": ["--network=wasmiot-net", "--privileged"],
 	"containerEnv": {
-		// This is because the app is configured to be run from under the
-		// directory host_app/ but VSCode and Python extensions don't know this(?)
-		// and would disagree with import-paths otherwise. See:
-		// https://stackoverflow.com/questions/50089498/how-to-set-the-root-directory-for-visual-studio-code-python-extension
-		"PYTHONPATH": "host_app"
+		// Setup flask debug mode to be on in devcontainer
+		"FLASK_DEBUG": "1"
 	},
+
+	// Don't start flask app by default.
+	"overrideCommand": true,
+
+	// Use /app -folder as a workspace folder. Otherwise it will depend on repository name.
+	"workspaceFolder": "/app",
+	"workspaceMount": "source=${localWorkspaceFolder},target=${containerWorkspaceFolder},type=bind",
+
 	// Configure tool-specific properties.
 	"customizations": {
 		// Configure properties specific to VS Code.
@@ -31,8 +36,6 @@
 			// Set *default* container specific settings.json values on container create.
 			"settings": { 
 				"python.defaultInterpreterPath": "/usr/local/bin/python",
-				"python.linting.enabled": true,
-				"python.linting.pylintEnabled": true,
 				"python.formatting.autopep8Path": "/usr/local/py-utils/bin/autopep8",
 				"python.formatting.blackPath": "/usr/local/py-utils/bin/black",
 				"python.formatting.yapfPath": "/usr/local/py-utils/bin/yapf",
@@ -41,9 +44,21 @@
 				"python.linting.mypyPath": "/usr/local/py-utils/bin/mypy",
 				"python.linting.pycodestylePath": "/usr/local/py-utils/bin/pycodestyle",
 				"python.linting.pydocstylePath": "/usr/local/py-utils/bin/pydocstyle",
-				"python.linting.pylintPath": "/usr/local/py-utils/bin/pylint"
+				"pylint.path": ["/usr/local/py-utils/bin/pylint"],
+				"pylint.args": [
+					"--max-line-length=120"
+				],
+				"[python]": {
+					"editor.rulers": [120]
+				},
+
+				// To keep things uniform,
+				"files.eol": "\n",
+				"editor.tabSize": 4,
+				"editor.insertSpaces": true,
+				"files.encoding": "utf8"
 			},
-			
+
 			// Add the IDs of extensions you want installed when the container is created.
 			"extensions": [
 				"ms-python.python",

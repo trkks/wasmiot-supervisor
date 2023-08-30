@@ -5,11 +5,11 @@ from typing import Any, List, Optional, Tuple
 
 import wasm3
 
-from wasm_utils.general_utils import (
+from host_app.wasm_utils.general_utils import (
     python_clock_ms, python_delay, python_print_int, python_println, python_get_temperature,
     python_get_humidity, Print, TakeImage, RpcCall, RandomGet
 )
-from wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig
+from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig
 
 RUNTIME_INIT_MEMORY = 15000
 
