@@ -12,7 +12,9 @@ from host_app.wasm_utils.general_utils import (
     python_clock_ms, python_delay, python_print_int, python_println, python_get_temperature,
     python_get_humidity, Print, TakeImage, RpcCall
 )
-from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig
+from host_app.wasm_utils.wasm_api import (
+    WasmRuntime, WasmModule, ModuleConfig, IncompatibleWasmModule
+)
 
 SERIALIZED_MODULE_POSTFIX = ".SERIALIZED.wasm"
 
@@ -51,7 +53,10 @@ class WasmtimeRuntime(WasmRuntime):
         """Load a module into the Wasm runtime."""
         if module.name in self.modules:
             print(f"Module {module.name} already loaded!")
-            return self.modules[module.name]
+            wasm_module = self.modules[module.name]
+            if wasm_module is None or not isinstance(wasm_module, WasmtimeModule):
+                return None
+            return wasm_module
 
         wasm_module = WasmtimeModule(module, self)
         self._modules[module.name] = wasm_module
@@ -66,6 +71,8 @@ class WasmtimeRuntime(WasmRuntime):
         read was successful and an error if not.
         """
         def read_from_module(module: WasmModule) -> Tuple[bytes | bytearray, Optional[str]]:
+            if not isinstance(module, WasmtimeModule):
+                raise IncompatibleWasmModule
             module_memory = module.get_memory()
             if module_memory is None:
                 raise RuntimeError(f"Module {module.name} has no memory!")
@@ -103,7 +110,11 @@ class WasmtimeRuntime(WasmRuntime):
         """Write to the runtime memory.
         Return None on success or an error message on failure."""
         def write_to_module(module: WasmModule) -> Optional[str]:
+            if not isinstance(module, WasmtimeModule):
+                raise IncompatibleWasmModule
             module_memory = module.get_memory()
+            if module_memory is None:
+                raise MemoryError
             module_memory.write(self.store, bytes_data, start=address)
             return None
 
@@ -142,7 +153,7 @@ class WasmtimeRuntime(WasmRuntime):
         self.linker.define_func(sys, "delay", FuncType([i32], []), python_delay)
         self.linker.define_func(sys, "print", FuncType([i32, i32], []), Print(self).function)
         self.linker.define_func(sys, "println", FuncType([i32], []), python_println)
-        self.linker.define_func(sys, "printInt", FuncType([i32, i32, i32, i32], []), python_print_int)
+        self.linker.define_func(sys, "printInt", FuncType([i32], []), python_print_int)
 
         # communication
         rpc_call = RpcCall(self).function
@@ -164,21 +175,31 @@ class WasmtimeModule(WasmModule):
 
     def get_memory(self) -> Optional[Memory]:
         """Get the Wasmtime memory."""
-        if self._instance is None:
+        if self._instance is None or not isinstance(self.runtime, WasmtimeRuntime):
             return None
-        memory =  self._instance.exports(self.runtime.store)["memory"]
-        return memory
+        memory = self._instance.exports(self.runtime.store)["memory"]
+        if isinstance(memory, Memory):
+            return memory
+        return None
 
     def _get_function(self, function_name: str) -> Optional[Func]:
         """Get a function from the Wasm module. If the function is not found, return None."""
         if self.runtime is None:
             print("Runtime not set!")
             return None
+        if not isinstance(self.runtime, WasmtimeRuntime):
+            print("Runtime is not Wasmtime!")
+            return None
+        if self._instance is None:
+            print("Instance not set!")
+            return None
 
         try:
             func = self._instance.exports(self.runtime.store)[function_name]
-            # print(f"Found function '{function_name}' in module '{self.name}'")
-            return func
+            if isinstance(func, Func):
+                return func
+            print(f"'{function_name}' is not a function!")
+            return None
         except RuntimeError:
             print(f"Function '{function_name}' not found!")
             return None
@@ -195,6 +216,9 @@ class WasmtimeModule(WasmModule):
 
     def get_arg_types(self, function_name: str) -> List[type]:
         """Get the argument types of a function from the Wasm module."""
+        if not isinstance(self.runtime, WasmtimeRuntime):
+            return []
+
         func = self._get_function(function_name)
         if func is None:
             return []
@@ -205,6 +229,9 @@ class WasmtimeModule(WasmModule):
 
     def run_function(self, function_name: str, params: List[Any]) -> Any:
         """Run a function from the Wasm module and return the result."""
+        if not isinstance(self.runtime, WasmtimeRuntime):
+            return None
+
         func = self._get_function(function_name)
         if func is None:
             print(f"Function '{function_name}' not found!")
@@ -220,6 +247,8 @@ class WasmtimeModule(WasmModule):
         if self.runtime is None:
             print("Runtime not set!")
             return
+        if not isinstance(self.runtime, WasmtimeRuntime):
+            return None
         if self.runtime.linker is None:
             print("Linker not set!")
             return
@@ -248,11 +277,14 @@ class WasmtimeModule(WasmModule):
         Note: with Wasmtime the standalone functions that do not require
         allocating WebAssembly memory have been linked to the runtime, not the module, in advance
         """
+        if not isinstance(self.runtime, WasmtimeRuntime):
+            return None
+
         camera = "camera"
 
         i32: ValType = ValType.i32()
 
-        take_image = TakeImage(self).function
+        take_image = TakeImage(self.runtime).function
         self.runtime.linker.define_func(camera, "takeImage", FuncType([i32, i32], []), take_image)
 
 

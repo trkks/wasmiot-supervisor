@@ -9,7 +9,9 @@ from host_app.wasm_utils.general_utils import (
     python_clock_ms, python_delay, python_print_int, python_println, python_get_temperature,
     python_get_humidity, Print, TakeImage, RpcCall, RandomGet
 )
-from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig
+from host_app.wasm_utils.wasm_api import (
+    WasmRuntime, WasmModule, ModuleConfig, WasmRuntimeNotSetError
+)
 
 RUNTIME_INIT_MEMORY = 15000
 
@@ -31,7 +33,7 @@ class Wasm3Runtime(WasmRuntime):
         """Get the Wasm3 runtime."""
         return self._runtime
 
-    def load_module(self, module: ModuleConfig) -> Optional[Wasm3Module]:
+    def load_module(self, module: ModuleConfig) -> Optional[WasmModule]:
         """Load a module into the Wasm runtime."""
         try:
             if module.name in self.modules:
@@ -85,6 +87,7 @@ class Wasm3Runtime(WasmRuntime):
 class Wasm3Module(WasmModule):
     """Wasm3 module class."""
     def __init__(self, config: ModuleConfig, runtime: Wasm3Runtime) -> None:
+        assert isinstance(runtime, Wasm3Runtime)
         super().__init__(config, runtime)
         # Linking is performed via a module instance, so loading needs to be
         # done first.
@@ -95,6 +98,8 @@ class Wasm3Module(WasmModule):
         """Get a function from the Wasm module. If the function is not found, return None."""
         if self.runtime is None:
             print("Runtime not set!")
+            return None
+        if not isinstance(self.runtime, Wasm3Runtime):
             return None
 
         try:
@@ -114,6 +119,9 @@ class Wasm3Module(WasmModule):
 
     def get_arg_types(self, function_name: str) -> List[type]:
         """Get the argument types of a function from the Wasm module."""
+        if not isinstance(self.runtime, Wasm3Runtime):
+            return []
+
         func = self.runtime.runtime.find_function(function_name)
         if func is None:
             return []
@@ -135,16 +143,21 @@ class Wasm3Module(WasmModule):
 
     def _load_module(self) -> None:
         """Load the Wasm module into the Wasm runtime."""
+        if not isinstance(self.runtime, Wasm3Runtime):
+            return
+
         try:
             with open(self.path, mode="rb") as module_file:
                 self._instance = self.runtime.env.parse_module(module_file.read())
             self.runtime.runtime.load(self._instance)
-            self._link_remote_functions()
         except RuntimeError as error:
             print(error)
 
     def _link_remote_functions(self) -> None:
         """Link some remote functions to the Wasm3 module."""
+        if self.runtime is None:
+            raise WasmRuntimeNotSetError()
+
         sys = "sys"
         communication = "communication"
         dht = "dht"
@@ -163,7 +176,7 @@ class Wasm3Module(WasmModule):
         self._instance.link_function(communication, "rpcCall", "v(*iii)", rpc_call)
 
         # peripheral
-        self._instance.link_function(camera, "takeImage", "v(*i)", TakeImage(self).function)
+        self._instance.link_function(camera, "takeImage", "v(*i)", TakeImage(self.runtime).function)
         self._instance.link_function(dht, "getTemperature", "f()", python_get_temperature)
         self._instance.link_function(dht, "getHumidity", "f()", python_get_humidity)
 
