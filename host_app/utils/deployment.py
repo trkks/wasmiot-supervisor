@@ -46,7 +46,11 @@ class Endpoint:
         description path item object.
         '''
         # NOTE: The deployment should only contain one path per function.
-        path, path_obj = assert_single_pop(description['paths'].items())
+        path_and_obj = assert_single_pop(description['paths'].items())
+        if path_and_obj is None:
+            # TODO: Can this happen? And what should be the defaults?
+            path, path_and_obj = "", {}
+        path, path_obj = path_and_obj
 
         target_method, operation_obj = get_operation(path_obj)
         response_media = get_main_response_content_entry(operation_obj)
@@ -59,6 +63,9 @@ class Endpoint:
             request_media = assert_single_pop(rbody['content'].items())
 
         server = assert_single_pop(description['servers'])
+        if server is None:
+            # TODO: Can this happen? What should be the default?
+            server = {'url': ""}
         url = server['url'].rstrip('/') + path
 
         return cls(
@@ -114,7 +121,7 @@ class CallData:
                 # Build the query based on matching names.
                 query = reduce(
                     lambda acc, x: f'{acc}&{x[0]}={x[1]}',
-                    ((y["name"], args[y["name"]]) for y in endpoint.parameters),
+                    ((str(y["name"]), args[str(y["name"])]) for y in endpoint.parameters),
                     '?'
                 )
             else:
@@ -128,7 +135,7 @@ class CallData:
             if endpoint.request_media_obj[0] in FILE_TYPES:
                 # If the result media type is a file, it is sent as 'data' when
                 # the receiver reads 'files' from the request.
-                files = { 'data': open(data, 'rb') }
+                files = { 'data': open(data if data is not None else "", 'rb') }
                 # No headers; requests will add them automatically.
             else:
                 headers['Content-Type'] = endpoint.request_media_obj[0]
@@ -185,6 +192,9 @@ class Deployment:
         '''
         # Initialize the module.
         module = self.runtime.get_or_load_module(self.modules[module_name])
+        if module is None:
+            # TODO: how should this error be handled?
+            raise RuntimeError("Wasm module could not be loaded!")
 
         # Get the OpenAPI description for interpreting more complex arguments
         # (e.g., lists and files).
@@ -199,7 +209,7 @@ class Deployment:
         # - TODO: Write primitive-typed lists and strings to memory and add
         # their pointers to the list first.
         # - If a model (TODO: Or any other files) are attached to the module at
-        # deployement time, pass pointers of their contents to the function
+        # deployment time, pass pointers of their contents to the function
         # first.
         # - Pointers to contents of external files come last in the list.
         ptrs: list[int] = []
@@ -263,7 +273,7 @@ class Deployment:
         function_name,
         wasm_out_args,
         wasm_output
-    ) -> Tuple[EndpointOutput, CallData]:
+    ) -> Tuple[EndpointOutput, CallData | None]:
         '''
         Find out the next function to be called in the deployment after the
         specified one.
@@ -323,13 +333,13 @@ class Deployment:
             ptr_ptr = func_out_args[0]
             length_ptr = func_out_args[1]
             ptr = int.from_bytes(
-                self.runtime.read_from_memory(ptr_ptr, 4), byteorder='little'
+                self.runtime.read_from_memory(ptr_ptr, 4)[0], byteorder='little'
             )
             length = int.from_bytes(
-                self.runtime.read_from_memory(length_ptr, 4), byteorder='little'
+                self.runtime.read_from_memory(length_ptr, 4)[0], byteorder='little'
             )
             value = self.runtime.read_from_memory(ptr, length)
-            as_bytes = bytes(value)
+            as_bytes = bytes(value[0])
             return as_bytes
 
         if media_type == 'application/json':
@@ -374,7 +384,7 @@ def get_operation(path_obj) -> Tuple[str, dict[str, Any]]:
         (x for x in path_obj.keys() if x.lower() in open_api_3_1_0_operations)
     )
 
-    return target_method, path_obj[target_method.lower()]
+    return str(target_method), path_obj[str(target_method).lower()]
 
 def get_main_response_content_entry(operation_obj):
     '''
@@ -383,9 +393,12 @@ def get_main_response_content_entry(operation_obj):
 
     NOTE: 200 is the only assumed response code.
     '''
-    media_type, media_type_object = assert_single_pop(
+    media_type_and_object = assert_single_pop(
         operation_obj['responses']['200']['content'].items()
     )
+    if media_type_and_object is None:
+        return "", {}
+    media_type, media_type_object = media_type_and_object
     return media_type, media_type_object.get('schema', {})
 
 def can_be_represented_as_wasm_primitive(schema) -> bool:

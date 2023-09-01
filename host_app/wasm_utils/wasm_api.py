@@ -8,6 +8,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeAlias
 ByteType: TypeAlias = bytes | bytearray
 
 
+class WasmRuntimeNotSetError(RuntimeError):
+    """Error raised when trying to use a functionality which requires a runtime
+       but the runtime has not been set properly."""
+
+
+class IncompatibleWasmModule(RuntimeError):
+    """Error raised when trying to mix incompatible Wasm modules."""
+
+
 class WasmRuntime:
     """Superclass for Wasm runtimes."""
     def __init__(self) -> None:
@@ -82,7 +91,7 @@ class WasmModule:
         self._functions: Optional[List[str]] = None
 
     @property
-    def id(self) -> str:
+    def id(self) -> str:  # pylint: disable=invalid-name
         """Get the id of the Wasm module."""
         return self._id
 
@@ -148,6 +157,9 @@ class WasmModule:
             print("Could not get data pointer!")
             return bytes()
 
+        if self.runtime is None:
+            raise WasmRuntimeNotSetError
+
         self.runtime.write_to_memory(data_ptr, data, self.name)
         _ = self.run_function(function_name, params)
 
@@ -175,7 +187,7 @@ class WasmModule:
             print(error)
             return None, None
 
-    def upload_data_file(self, data_file: str,
+    def upload_data_file(self, data_file: str | Path,
                          alloc_function_name: str) -> Tuple[int | None, int | None]:
         """Upload data from file to the Wasm module.
         Return (memory pointer, size) pair of the data on success, None used on failure."""
@@ -233,13 +245,18 @@ class WasmModule:
 @dataclass
 class ModuleConfig:
     """Dataclass for module name and file location."""
-    id: str
+    id: str  # pylint: disable=invalid-name
     name: str
     path: str
     description: Any = field(default_factory=dict)
     data_files: List[Path] = field(default_factory=list)
     ml_model: Optional[MLModel] = None
     data_ptr_function_name: str = "get_img_ptr"
+
+    def set_model_from_data_files(self, index: int = 0) -> None:
+        """Sets the model using the indicated data file."""
+        if 0 <= index < len(self.data_files):
+            self.ml_model = MLModel(str(self.data_files[index]))
 
 
 @dataclass

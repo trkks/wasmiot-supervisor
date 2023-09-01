@@ -6,6 +6,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 import logging
 import os
+import random
 import socket
 from pathlib import Path
 import queue
@@ -15,7 +16,6 @@ import threading
 from typing import Any, Tuple
 
 import atexit
-from typing import Tuple
 from flask import Flask, Blueprint, jsonify, current_app, request, send_file
 from flask.helpers import get_debug_flag
 from werkzeug.serving import get_sockaddr, select_address_family
@@ -96,7 +96,7 @@ request_history = []
 '''Log of all the requests handled by this supervisor'''
 
 wasm_queue = queue.Queue()
-'''Queue of work for asynchoronous WebAssembly execution'''
+'''Queue of work for asynchronous WebAssembly execution'''
 
 def do_wasm_work(entry):
     '''
@@ -264,7 +264,7 @@ def get_listening_address(app: Flask) -> Tuple[str, int]:
     """
 
     # Copied from flask/app.py and werkzeug.service how it determines address,
-    # as serving address is not stored. By default flask uses request iformation
+    # as serving address is not stored. By default flask uses request information
     # for this, but we can't rely on that.
 
     host = None
@@ -291,7 +291,9 @@ def get_listening_address(app: Flask) -> Tuple[str, int]:
 
     address_family = select_address_family(host, port)
     server_address = get_sockaddr(host, int(port), address_family)
-
+    if isinstance(server_address, str):
+        # TODO: check if this case can happen and what should be the default port
+        return server_address, 80
     return server_address
 
 @bp.route('/.well-known/wasmiot-device-description')
@@ -307,7 +309,6 @@ def thingi_description():
 @bp.route('/health')
 def thingi_health():
     '''Return a report of the current health status of this thing'''
-    import random
     return jsonify({
          "cpuUsage": random.random()
     })
@@ -342,7 +343,7 @@ def run_module_function(deployment_id, module_name, function_name):
     Execute the function in WebAssembly module and act based on instructions
     attached to the deployment of this call/execution.
     '''
-    if not deployment_id in deployments:
+    if deployment_id not in deployments:
         return endpoint_failed(request, 'deployment does not exist', 404)
 
     if module_name not in deployments[deployment_id].modules:
@@ -353,7 +354,11 @@ def run_module_function(deployment_id, module_name, function_name):
     if (input_data_file := request.files.get('data')):
         input_file_path = os.path.join(
             current_app.config['PARAMS_FOLDER'],
-            input_data_file.filename
+            (
+                input_data_file.filename
+                if input_data_file is not None and input_data_file.filename is not None
+                else ""
+            )
         )
         input_data_file.save(input_file_path)
         input_file_paths.append(Path(input_file_path))
@@ -404,7 +409,9 @@ def run_module_function_raw_input(module_name, function_name):
     # input there.
     try:
         module = wasm_runtime.get_or_load_module(module_config)
-        input_ptr = module.run_function(ALLOC_NAME, [len(input_data)])
+        if module is None:
+            return endpoint_failed(request, f"Module '{module_name}' not found")
+        input_ptr: int = module.run_function(ALLOC_NAME, [len(input_data)])
     except Exception as err:
         return endpoint_failed(
             request,
@@ -419,24 +426,24 @@ def run_module_function_raw_input(module_name, function_name):
     # Reserve memory for WebAssembly to write the length of the generated
     # output, so it can be read later and used in reading the _actual_ result.
     try:
-        output_len_ptr = module.run_function(ALLOC_NAME, [OUTPUT_LENGTH_BYTES])
+        output_len_ptr: int = module.run_function(ALLOC_NAME, [OUTPUT_LENGTH_BYTES])
     except Exception as err:
         return endpoint_failed(
             request,
             f"Failed running WebAssembly '{ALLOC_NAME}' for reserving {OUTPUT_LENGTH_BYTES} bytes: {err}"
         )
 
-    try:
-        # NOTE: The parameters of the WebAssembly function being run is
-        # constrained here. Expecting it to be:
-        # Three (3) parameters:
-        #   1) input buffer address
-        #   2) length of input buffer
-        #   3) address for writing output buffer's length
-        # One output:
-        #   - output buffer address
-        input_params = [input_ptr, len(input_data), output_len_ptr]
+    # NOTE: The parameters of the WebAssembly function being run is
+    # constrained here. Expecting it to be:
+    # Three (3) parameters:
+    #   1) input buffer address
+    #   2) length of input buffer
+    #   3) address for writing output buffer's length
+    # One output:
+    #   - output buffer address
+    input_params = [input_ptr, len(input_data), output_len_ptr]
 
+    try:
         print(
             f"Running WebAssembly function '{function_name}' with params: ({', '.join((str(i) for i in input_params))})"
         )
@@ -502,6 +509,8 @@ def run_ml_module(module_name = None):
     module_config = wasm_modules.get(module_name, None)
     if module_config is None:
         return endpoint_failed(request, f"module {module_name} not found")
+    if module_config.ml_model is None:
+        return endpoint_failed(request, f"module {module_name} does not have ML model")
 
     module = wasm_runtime.get_or_load_module(module_config)
     if module is None:
@@ -658,6 +667,8 @@ def upload_module():
         #flash('No module attached')
         return jsonify({'status': 'no module attached'})
     file = request.files['module']
+    if file.filename is None:
+        return jsonify({'status': 'No filename found'})
     if file.filename.rsplit('.', 1)[1].lower() != 'wasm':
         return jsonify({'status': 'Only .wasm-files accepted'})
     filename = secure_filename(file.filename)
@@ -669,6 +680,8 @@ def upload_params():
     if 'params' not in request.files:
         return jsonify({'status': 'no params attached'})
     file = request.files['params']
+    if file.filename is None:
+        return jsonify({'status': 'No filename found'})
     if file.filename.rsplit('.', 1)[1].lower() != 'json':
         return jsonify({'status': 'Only json-files accepted'})
     filename = secure_filename(file.filename)
@@ -721,6 +734,11 @@ def fetch_modules(modules) -> list[ModuleConfig]:
             # update the module configuration with the model path
             # TODO: Does having a "model path" attribute in the module
             # config have direct benefits over "generic" files list?
+            # Something must point out the currently used model file for ML modules:
+            # - a) either it is always assumed to be the first data file
+            # - b) or there is a "special" attribute for the model
+            # - c) alternatively there is some additional information about the data files,
+            #   - type or description, that would indicate the model file
             # new_module_config.ml_model = MLModel(other_path)
 
         # Save downloaded module's details.
@@ -731,6 +749,9 @@ def fetch_modules(modules) -> list[ModuleConfig]:
             description=res_desc.json(),
             data_files=data_files,
         )
+        # combining options a) and b) from above:
+        new_module_config.set_model_from_data_files()
+
         configs.append(new_module_config)
 
     return configs

@@ -7,11 +7,10 @@ from time import sleep, time
 from typing import Any, Callable
 
 import cv2
-import numpy as np
 import requests
 
 from host_app.utils.configuration import remote_functions
-from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule
+from host_app.wasm_utils.wasm_api import WasmRuntime
 
 if platform.system() != "Windows":
     import adafruit_dht
@@ -62,6 +61,8 @@ def python_get_temperature() -> float:
     try:
         dht_device = adafruit_dht.DHT22(board.D4)
         temperature = dht_device.temperature
+        if temperature is None:
+            return 0.0
         return float(temperature)
     except RuntimeError as error:
         print(error.args[0])
@@ -74,8 +75,10 @@ def python_get_humidity() -> float:
         return 0.0
 
     try:
-        dht_device = adafruit_dht.DHT22(board.D4)
+        dht_device = adafruit_dht.DHT22(board.D4)  # ignore=reportUnboundVariable
         humidity = dht_device.humidity
+        if humidity is None:
+            return 0.0
         return float(humidity)
     except RuntimeError as error:
         print(error.args[0])
@@ -99,22 +102,22 @@ class Print(RemoteFunction):
 class TakeImage(RemoteFunction):
     """Remote function generator for capturing image with attached camera."""
 
-    def __init__(self, module: WasmModule) -> None:
-        super().__init__(module.runtime)
+    def __init__(self, runtime: WasmRuntime) -> None:
+        super().__init__(runtime)
         def alloc(nbytes):
-            return module.runtime.run_function("alloc", [nbytes])
+            return runtime.run_function("alloc", [nbytes])
         self.alloc = alloc
 
     @property
-    def function(self) -> Callable[[Callable[[int], int], int, int], None]:
-        def python_take_image(out_ptr_ptr, out_size_ptr):
+    def function(self) -> Callable[[int, int], None]:
+        def python_take_image(out_ptr_ptr: int, out_size_ptr: int):
             """
             Take an image and write it to memory at the given runtime using the given module.
 
             Store the pointer to the image in out_ptr_ptr and the size as in
             out_size_ptr both in 32bits LSB.
             """
-            cam = cv2.VideoCapture(0)
+            cam = cv2.VideoCapture(0)  # type: ignore
             _, img = cam.read()
             cam.release()
 
@@ -122,7 +125,9 @@ class TakeImage(RemoteFunction):
             data = datatmp.tobytes()
             data_len = len(data)
             data_ptr = self.alloc(data_len)
-            self.runtime.write_to_memory(data_ptr, data)
+            if data_ptr is None:
+                # memory allocation failed
+                raise MemoryError(f"Unable to allocate {data_len} bytes of memory!")
 
             # Write the image to memory.
             self.runtime.write_to_memory(data_ptr, data)
