@@ -13,7 +13,7 @@ import queue
 import string
 import struct
 import threading
-from typing import Any, Tuple
+from typing import Any, Dict, Generator, Tuple
 
 import atexit
 from flask import Flask, Blueprint, jsonify, current_app, request, send_file
@@ -73,6 +73,17 @@ Mapping of deployment-IDs to instructions for forwarding function results to
 other devices and calling their functions
 """
 
+
+def request_counter() -> Generator[int, None, None]:
+    """Returns a unique number for each request"""
+    counter: int = 0
+    while True:
+        counter += 1
+        yield counter
+
+request_id_counters: Dict[str, Generator[int, None, None]] = {}
+
+
 @dataclass
 class RequestEntry():
     '''Describes a request of WebAssembly execution'''
@@ -83,14 +94,18 @@ class RequestEntry():
     function_name: str
     method: str
     request_args: Any
-    request_files: list[str] # List of `Path`s
+    request_files: Dict[str, str]
     work_queued_at: datetime
     result: Any = None
 
     def __post_init__(self):
         # TODO: Hash the ID (and include args and time as well) because in this
         # current way multiple same requests get overwritten.
-        self.request_id = f'{self.deployment_id}:{self.module_name}:{self.function_name}'
+        # - For now a simple request counter is used to distinguish requests for the same function
+        request_id = f'{self.deployment_id}:{self.module_name}:{self.function_name}'
+        if request_id not in request_id_counters:
+            request_id_counters[request_id] = request_counter()
+        self.request_id = f'{request_id}:{next(request_id_counters[request_id])}'
 
 request_history = []
 '''Log of all the requests handled by this supervisor'''
@@ -98,7 +113,7 @@ request_history = []
 wasm_queue = queue.Queue()
 '''Queue of work for asynchronous WebAssembly execution'''
 
-def do_wasm_work(entry):
+def do_wasm_work(entry: RequestEntry):
     '''
     Run a WebAssembly function and follow deployment instructions on what to
     do with its output.
@@ -148,7 +163,7 @@ def do_wasm_work(entry):
 
     return sub_response.json()["resultUrl"]
 
-def make_history(entry):
+def make_history(entry: RequestEntry):
     '''Add entry to request history after executing its work'''
     entry.result = do_wasm_work(entry)
     request_history.append(entry)
@@ -350,8 +365,8 @@ def run_module_function(deployment_id, module_name, function_name):
         return endpoint_failed(request, f"module {module_name} not found for this deployment")
 
     # Write input data to filesystem.
-    input_file_paths = []
-    if (input_data_file := request.files.get('data')):
+    input_file_paths: Dict[str, str] = {}
+    for param_name, input_data_file in request.files.items():
         input_file_path = os.path.join(
             current_app.config['PARAMS_FOLDER'],
             (
@@ -361,7 +376,7 @@ def run_module_function(deployment_id, module_name, function_name):
             )
         )
         input_data_file.save(input_file_path)
-        input_file_paths.append(Path(input_file_path))
+        input_file_paths[param_name] = str(Path(input_file_path))
 
     entry = RequestEntry(
         deployment_id,
@@ -369,7 +384,7 @@ def run_module_function(deployment_id, module_name, function_name):
         function_name,
         request.method,
         request.args,
-        list(map(str, input_file_paths)),
+        input_file_paths,
         datetime.now()
     )
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from functools import reduce
 import json
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Dict, Tuple
 
 import cv2
 import numpy as np
@@ -178,7 +178,7 @@ class Deployment:
         module_name,
         function_name,
         args: dict,
-        input_file_paths: list
+        input_file_paths: Dict[str, str]
     ) -> Tuple[WasmModule, list[int], list[int]]:
         '''
         Based on module's function's description, figure out what the
@@ -229,14 +229,27 @@ class Deployment:
         types = module.get_arg_types(function_name)
         primitive_args = [t(arg) for arg, t in zip(args.values(), types)]
 
+        # get a list of expected file parameters
+        file_parameters = [
+            (str(parameter['name']), bool(parameter.get('required', False)))
+            for parameter in operation.get('parameters', [])
+            if parameter.get('in', None) == 'requestBody' and parameter.get('name', '') != ''
+        ]
+
         # Files given as input in request.
-        if 'requestBody' in operation:
-            # NOTE: Assuming a single file as input.
-            file_path = input_file_paths[0]
+        for file_parameter, required_parameter in file_parameters:
+            if file_parameter not in input_file_paths and required_parameter:
+                raise RuntimeError(f'"{file_parameter}" not found in input files')
+            file_path = input_file_paths[file_parameter]
             file_ptr, file_size = module.upload_data_file(file_path, 'alloc')
             if file_ptr is None or file_size is None:
                 raise RuntimeError(f'Could not allocate memory for input file "{file_path}"')
             ptrs += [file_ptr, file_size]
+
+        # NOTE: the previous approach works for in the test inference case if it has
+        # been deployed with the model file (and no other files). The resulting ptrs
+        # list is [model_ptr, model_size, input_ptr, input_size] which is what the
+        # infer_from_ptrs function expects. However, in general this might require more work.
 
         # Lastly if the _response_ is not a primitive, memory needs to be
         # allocated for it as well for WebAssembly to write and host to read

@@ -160,27 +160,57 @@ curl -L https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model
 
 Now deploy the files with:
 ```bash
-curl --header "Content-Type: application/json" --request POST --data '{
-        "deploymentId":"1",
-        "modules":[
+curl \
+    --header "Content-Type: application/json" \
+    --request POST \
+    --data '{
+        "deploymentId": "1",
+        "modules": [
             {
-                "id":"1",
-                "name":"ml",
-                "urls":{
-                    "binary":"http://localhost:8000/wasm-binaries/wasm32-wasi/ml.wasm",
-                    "description":"http://localhost:8000/object-inference-open-api-description.json",
-                    "other":[
+                "id": "1",
+                "name": "mobilenet",
+                "urls": {
+                    "binary": "http://localhost:8000/wasm-binaries/wasm32-wasi/ml.wasm",
+                    "description": "http://localhost:8000/object-inference-open-api-description.json",
+                    "other": [
                         "http://localhost:8000/wasm-binaries/wasm32-wasi/ml.pb"
                     ]
                 }
             }
         ],
-        "instructions": [
-            {
-                "sequence": 0,
-                "to": null
+        "instructions": {
+            "modules": {
+                "mobilenet": {
+                    "infer_from_ptrs": {
+                        "paths": {
+                            "": {
+                                "get": {
+                                    "parameters": [{
+                                        "name": "data",
+                                        "in": "requestBody",
+                                        "required": true,
+                                        "schema": {}
+                                    }],
+                                    "responses": {
+                                        "200": {
+                                            "content": {
+                                                "application/json": {
+                                                    "schema": {
+                                                        "type": "integer",
+                                                        "format": "int64"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "to": null
+                    }
+                }
             }
-        ]
+        }
     }' http://localhost:5000/deploy
 ```
 
@@ -189,7 +219,7 @@ After which you can test the inference with some image file via curl, eg.:
 # Download a test image
 curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg > husky.jpeg
 # Send the image to supervisor and wait for it to return the classification
-curl -v -X POST -F data=@./husky.jpeg localhost:5000/ml/ml
+curl -F data=@./husky.jpeg http://localhost:5000/1/modules/mobilenet/infer_from_ptrs
 ```
 
 The supervisor will again, aften some time, respond with a four-byte representation of a 32-bit integer, that will match the line number in [the labels file](https://github.com/radu-matei/wasi-tensorflow-inference/blob/master/model/labels.txt).
