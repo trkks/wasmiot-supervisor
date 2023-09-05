@@ -5,7 +5,7 @@ Utilities for Flask-endpoint operations etc.
 from flask import jsonify
 
 
-def endpoint_failed(request, msg="", status_code=500):
+def endpoint_failed(request, msg="", status_code=500, **additional_fields):
     """
     Helper to construct JSON response for communicating that request to endpoint failed (and log this).
 
@@ -16,6 +16,6 @@ def endpoint_failed(request, msg="", status_code=500):
     # Log the message TODO Use an actual logger.
     print(f"{request.method} on '{request.path}': {msg}")
 
-    resp = jsonify({ "status": "error", "result": msg })
+    resp = jsonify({ "status": "error", "result": msg, **additional_fields })
     resp.status_code = status_code
     return resp

@@ -9,17 +9,7 @@
             "type": "python",
             "request": "launch",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/host_app",
-            "module": "flask",
-            "args": [
-                "--app",
-                "${workspaceFolder}/host_app/flask_app/app.py:create_app",
-                "--debug",
-                "run",
-                // This allows a simultaneously running orchestrator to make
-                // requests based on IP-address advertised by supervisor-mDns.
-                "--host=0.0.0.0"
-            ],
+            "module": "host_app",
             "env": {
                 "FLASK_APP": "debug-thingi",
             },
