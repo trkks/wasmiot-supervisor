@@ -1,6 +1,7 @@
 """Wasmtime Python bindings."""
 
 from __future__ import annotations
+import os
 from typing import Any, List, Optional, Tuple
 
 from wasmtime import (
@@ -262,9 +263,13 @@ class WasmtimeModule(WasmModule):
 
         path_serial = self.path + SERIALIZED_MODULE_POSTFIX
         try:
+            if os.path.getmtime(self.path) > os.path.getmtime(path_serial):
+                raise WasmtimeError("Serialized module is older than the original")
+
             # try to load the module from the serialized version
             module = Module.deserialize_file(self.runtime.engine, path_serial)
-        except WasmtimeError:
+        except (IOError, WasmtimeError):
+            print("Could not load serialized module, compiling from source")
             # compile the module which can be a slow process
             module = Module.from_file(self.runtime.engine, self.path)
             # write a serialized version of the module to disk for later use

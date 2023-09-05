@@ -346,12 +346,12 @@ class Deployment:
             ptr_ptr = func_out_args[0]
             length_ptr = func_out_args[1]
             ptr = int.from_bytes(
-                self.runtime.read_from_memory(ptr_ptr, 4)[0], byteorder='little'
+                self.runtime.read_from_memory(ptr_ptr, 4, self.runtime.current_module_name)[0], byteorder='little'
             )
             length = int.from_bytes(
-                self.runtime.read_from_memory(length_ptr, 4)[0], byteorder='little'
+                self.runtime.read_from_memory(length_ptr, 4, self.runtime.current_module_name)[0], byteorder='little'
             )
-            value = self.runtime.read_from_memory(ptr, length)
+            value = self.runtime.read_from_memory(ptr, length, self.runtime.current_module_name)
             as_bytes = bytes(value[0])
             return as_bytes
 
@@ -367,6 +367,9 @@ class Deployment:
             temp_img_path = Path('temp_image.jpg')
             block = read_out_bytes()
             bytes_array = np.frombuffer(block, dtype=np.uint8)
+            if len(bytes_array) == 0:
+                print('Empty image received')
+                return None, None
             img = cv2.imdecode(bytes_array, cv2.IMREAD_COLOR)
             cv2.imwrite(temp_img_path.as_posix(), img)
             return None, temp_img_path

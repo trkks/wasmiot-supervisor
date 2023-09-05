@@ -92,7 +92,7 @@ class Print(RemoteFunction):
         """Print the string decoded from the specified memory location at the given runtime."""
         def python_print(pointer: int, length: int) -> None:
             """Print the string decoded from the specified memory location at the given runtime."""
-            data, error = self.runtime.read_from_memory(pointer, length)
+            data, error = self.runtime.read_from_memory(pointer, length, self.runtime.current_module_name)
             message = data.decode() if error is None else error
             print(message, end="")
 
@@ -147,14 +147,14 @@ class RpcCall(RemoteFunction):
         Both the data and the target host is determined from the runtime memory."""
         def python_rpc_call(func_name_ptr: int, func_name_size: int,
                             data_ptr: int, data_size: int) -> None:
-            func_name_bytes, error = self.runtime.read_from_memory(func_name_ptr, func_name_size)
+            func_name_bytes, error = self.runtime.read_from_memory(func_name_ptr, func_name_size, self.runtime.current_module_name)
             if error is not None:
                 print(error)
                 return
             func_name = func_name_bytes.decode()
             print(func_name)
             func = remote_functions[func_name]
-            data, error = self.runtime.read_from_memory(data_ptr, data_size)
+            data, error = self.runtime.read_from_memory(data_ptr, data_size, self.runtime.current_module_name)
             if error is not None:
                 print(error)
                 return
@@ -182,7 +182,7 @@ class RandomGet(RemoteFunction):
 
         def random_get(buf_ptr: int, size: int) -> int:
             """Generate random bytes and write them to the specified memory location."""
-            self.runtime.write_to_memory(buf_ptr, os.urandom(size))
+            self.runtime.write_to_memory(buf_ptr, os.urandom(size), self.runtime.current_module_name)
             return WasiErrno.SUCCESS
 
         return random_get

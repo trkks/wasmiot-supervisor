@@ -132,11 +132,18 @@ class Wasm3Module(WasmModule):
 
     def run_function(self, function_name: str, params: List[Any]) -> Any:
         """Run a function from the Wasm module and return the result."""
+        if not isinstance(self.runtime, Wasm3Runtime):
+            return None
+
+        # TODO: this approach is used in order to allocate required memory to the correct module
+        # in external functions like take_image. It is not thread safe and can cause problems.
+        self.runtime.current_module_name = self.name
+
         func = self._get_function(function_name)
         if func is None:
             return None
 
-        print(f"Running function '{function_name}' with params: {params}")
+        print(f"({self.name}) Running function '{function_name}' with params: {params}")
         if not params:
             return func()
         return func(*params)

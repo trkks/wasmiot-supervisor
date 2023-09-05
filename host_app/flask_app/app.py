@@ -84,6 +84,19 @@ def request_counter() -> Generator[int, None, None]:
 request_id_counters: Dict[str, Generator[int, None, None]] = {}
 
 
+def path_to_string(result: Any) -> Any:
+    """Converts all included Path objects to strings."""
+    if isinstance(result, Path):
+        return str(result)
+    if isinstance(result, (list, tuple)):
+        return [path_to_string(item) for item in result]
+    if isinstance(result, dict):
+        return {key: path_to_string(value) for key, value in result.items()}
+    if isinstance(result, RequestEntry):
+        result.result = path_to_string(result.result)
+    return result
+
+
 @dataclass
 class RequestEntry():
     '''Describes a request of WebAssembly execution'''
@@ -343,14 +356,12 @@ def results_route(request_id=None, full=False):
 @bp.route('/' + results_route('<request_id>'))
 def request_history_list(request_id=None):
     '''Return a list of or a specific entry result from previous call'''
-    entry = next(
-            (jsonify(x) for x in request_history if x.request_id == request_id),
-            endpoint_failed(request, 'no matching entry in history', 404)
-        ) \
-        if request_id \
-        else None
-
-    return entry if entry else jsonify(request_history)
+    if request_id is None:
+        return jsonify(path_to_string(request_history))
+    matching_requests = [x for x in request_history if x.request_id == request_id]
+    if len(matching_requests) == 0:
+        return endpoint_failed(request, 'no matching entry in history', 404)
+    return jsonify(path_to_string(matching_requests[0]))
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
 def run_module_function(deployment_id, module_name, function_name):
@@ -434,7 +445,7 @@ def run_module_function_raw_input(module_name, function_name):
         )
 
     # Copy the input data into the allocated memory block.
-    write_err = wasm_runtime.write_to_memory(input_ptr, input_data)
+    write_err = wasm_runtime.write_to_memory(input_ptr, input_data, wasm_runtime.current_module_name)
     if write_err is not None:
         return endpoint_failed(request, write_err)
 
@@ -513,7 +524,7 @@ def run_module_function_raw_input(module_name, function_name):
 
 @bp.route('/foo')
 def serve_test_jpg():
-    return send_file('temp_image.jpg')
+    return send_file('../temp_image.jpg')
 
 @bp.route('/ml/<module_name>', methods=['POST'])
 def run_ml_module(module_name = None):

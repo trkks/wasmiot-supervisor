@@ -301,6 +301,66 @@ You can find another test image in the [wasi-inference repository in 'testdata']
     curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg > husky.jpeg
     curl -F data=@./husky.jpeg http://localhost:5000/DEPLOYMENT_ID/modules/mobilenet/infer_from_ptrs
     ```
+
+## Testing camera module
+
+```bash
+curl \
+    --header "Content-Type: application/json" \
+    --request POST \
+    --data '{
+        "deploymentId": "2",
+        "modules": [
+            {
+                "id": "2",
+                "name":"camera",
+                "urls":{
+                    "binary":"http://localhost:8000/wasm-binaries/wasm32-unknown-unknown/camera.wasm",
+                    "description":"http://localhost:8000/camera/open-api-description.json",
+                    "other":[]
+                }
+            }
+        ],
+        "instructions": {
+            "modules": {
+                "camera": {
+                    "take_image": {
+                        "paths": {
+                            "": {
+                                "get": {
+                                    "parameters": [],
+                                    "responses": {
+                                        "200": {
+                                            "description": "Return the image taken with a camera from the request",
+                                            "content": {
+                                                "image/jpeg": {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "to": null
+                    }
+                }
+            }
+        }
+    }' \
+    http://localhost:5000/deploy
+```
+
+To take an image with the camera. The image is save to file `temp_image.jpg`.
+
+```bash
+curl http://localhost:5000/2/modules/camera/take_image
+```
+
+To see all the results:
+
+```bash
+curl http://localhost:5000/request-history
+```
+
 ## Devcontainer
 Use VSCode for starting in container. NOTE: Be sure the network it uses is
 created i.e., before starting the container run:
