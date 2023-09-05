@@ -4,7 +4,7 @@ import os
 import platform
 import struct
 from time import sleep, time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import cv2
 import requests
@@ -102,11 +102,9 @@ class Print(RemoteFunction):
 class TakeImage(RemoteFunction):
     """Remote function generator for capturing image with attached camera."""
 
-    def __init__(self, runtime: WasmRuntime) -> None:
-        super().__init__(runtime)
-        def alloc(nbytes):
-            return runtime.run_function("alloc", [nbytes])
-        self.alloc = alloc
+    def alloc(self, nbytes: int):
+        """Allocate nbytes of memory in the runtime."""
+        return self.runtime.run_function("alloc", [nbytes], self.runtime.current_module_name)
 
     @property
     def function(self) -> Callable[[int, int], None]:
@@ -130,14 +128,14 @@ class TakeImage(RemoteFunction):
                 raise MemoryError(f"Unable to allocate {data_len} bytes of memory!")
 
             # Write the image to memory.
-            self.runtime.write_to_memory(data_ptr, data)
+            self.runtime.write_to_memory(data_ptr, data, self.runtime.current_module_name)
 
             # Write pointers to image pointer and length to memory assuming they both
             # have 32 bits allocated.
             pointer_bytes = struct.pack("<I", data_ptr)
             length_bytes = struct.pack("<I", data_len)
-            self.runtime.write_to_memory(out_ptr_ptr, pointer_bytes)
-            self.runtime.write_to_memory(out_size_ptr, length_bytes)
+            self.runtime.write_to_memory(out_ptr_ptr, pointer_bytes, self.runtime.current_module_name)
+            self.runtime.write_to_memory(out_size_ptr, length_bytes, self.runtime.current_module_name)
 
         return python_take_image
 

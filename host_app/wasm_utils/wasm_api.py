@@ -22,6 +22,7 @@ class WasmRuntime:
     def __init__(self) -> None:
         self._modules: Dict[str, WasmModule] = {}
         self._functions: Optional[Dict[str, WasmModule]] = None
+        self._current_module_name: Optional[str] = None
 
     @property
     def modules(self) -> Dict[str, WasmModule]:
@@ -38,6 +39,16 @@ class WasmRuntime:
                     self._functions[function_name] = module
 
         return self._functions
+
+    @property
+    def current_module_name(self) -> Optional[str]:
+        """Get the name of the current module."""
+        return self._current_module_name
+
+    @current_module_name.setter
+    def current_module_name(self, module_name: Optional[str]) -> None:
+        """Set the name of the current module."""
+        self._current_module_name = module_name
 
     def load_module(self, module: ModuleConfig) -> Optional[WasmModule]:
         """Load a module into the Wasm runtime."""
@@ -68,9 +79,17 @@ class WasmRuntime:
         Return None on success or an error message on failure."""
         raise NotImplementedError
 
-    def run_function(self, function_name: str, params: List[Any]) -> Optional[Any]:
+    def run_function(self, function_name: str, params: List[Any],
+                     module_name: Optional[str] = None) -> Optional[Any]:
         """Runs a function in the Wasm runtime.
         If the function is not found, return None. Otherwise, returns the function result."""
+        if module_name is not None:
+            module = self.modules.get(module_name)
+            if module is None:
+                print(f"Module '{module_name}' not found!")
+                return None
+            return module.run_function(function_name, params)
+
         for _, module in self.modules.items():
             func = module._get_function(function_name)  # pylint: disable=protected-access
             if func is not None:
@@ -179,7 +198,7 @@ class WasmModule:
         try:
             data_size = len(data)
             data_pointer = self.run_function(alloc_function, [data_size])
-            self.runtime.write_to_memory(data_pointer, data)
+            self.runtime.write_to_memory(data_pointer, data, self.name)
             return (data_pointer, data_size)
 
         except RuntimeError as error:

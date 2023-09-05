@@ -144,6 +144,7 @@ class WasmtimeRuntime(WasmRuntime):
         sys = "sys"
         communication = "communication"
         dht = "dht"
+        camera = "camera"
 
         i32: ValType = ValType.i32()
         f32: ValType = ValType.f32()
@@ -160,6 +161,8 @@ class WasmtimeRuntime(WasmRuntime):
         self.linker.define_func(communication, "rpcCall", FuncType([i32, i32, i32, i32], []), rpc_call)
 
         # peripheral
+        take_image = TakeImage(self).function
+        self.linker.define_func(camera, "takeImage", FuncType([i32, i32], []), take_image)
         self.linker.define_func(dht, "getTemperature", FuncType([], [f32]), python_get_temperature)
         self.linker.define_func(dht, "getHumidity", FuncType([], [f32]), python_get_humidity)
 
@@ -232,12 +235,16 @@ class WasmtimeModule(WasmModule):
         if not isinstance(self.runtime, WasmtimeRuntime):
             return None
 
+        # TODO: this approach is used in order to allocate required memory to the correct module
+        # in external functions like take_image. It is not thread safe and can cause problems.
+        self.runtime.current_module_name = self.name
+
         func = self._get_function(function_name)
         if func is None:
             print(f"Function '{function_name}' not found!")
             return None
 
-        print(f"Running function '{function_name}' with params: {params}")
+        print(f"({self.name}) Running function '{function_name}' with params: {params}")
         if not params:
             return func(self.runtime.store)
         return func(self.runtime.store, *params)
@@ -275,17 +282,11 @@ class WasmtimeModule(WasmModule):
         """Link some remote functions to the Wasmtime module.
 
         Note: with Wasmtime the standalone functions that do not require
-        allocating WebAssembly memory have been linked to the runtime, not the module, in advance
+        allocating WebAssembly memory have been linked to the runtime, not the module, in advance.
+
+        Since there can be only function with the same name in the runtime, the memory allocation
+        functions are handled using current_module_name variable from the runtime.
         """
-        if not isinstance(self.runtime, WasmtimeRuntime):
-            return None
-
-        camera = "camera"
-
-        i32: ValType = ValType.i32()
-
-        take_image = TakeImage(self.runtime).function
-        self.runtime.linker.define_func(camera, "takeImage", FuncType([i32, i32], []), take_image)
 
 
 arg_types = {
