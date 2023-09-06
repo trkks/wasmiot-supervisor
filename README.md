@@ -74,10 +74,22 @@ The modules can be found in the [wasmiot-modules repo](https://github.com/Liquid
 The simplest deployment to test is counting the Fibonacci sequence with the `fibo` module.
 
 After building the WebAssembly modules, you can start up a simple file server inside the `modules` directory containing `.wasm` files in `wasm-binaries/` when the `build.sh` script is used:
+### Locally
 ```
+# Define hostname of the server for making requests later.
+export WASM_SERVER_HOST=localhost
 cd modules
 python3 -m http.server
 ```
+### Within Docker network
+```
+# Define hostname of the server for making requests later.
+export WASM_SERVER_HOST=wasm-server
+cd modules
+# Use the provided script and Dockerfile
+./docker-server/run.sh ./docker-server/Dockerfile
+```
+
 This will allow the supervisor to fetch needed files on deployment.
 
 Using `curl` you can deploy the `fibo` module with the following command containing the needed manifest as data:
@@ -85,42 +97,42 @@ Using `curl` you can deploy the `fibo` module with the following command contain
 curl \
     --header "Content-Type: application/json" \
     --request POST \
-    --data '{
-        "deploymentId":"0",
-        "modules":[
+    --data "{
+        \"deploymentId\":\"0\",
+        \"modules\":[
             {
-                "id":"0",
-                "name":"fiboMod",
-                "urls":{
-                    "binary":"http://localhost:8000/wasm-binaries/wasm32-unknown-unknown/fibo.wasm",
-                    "description":"http://localhost:8000/fibo/open-api-description.json",
-                    "other":[]
+                \"id\":\"0\",
+                \"name\":\"fiboMod\",
+                \"urls\":{
+                    \"binary\":\"http://${WASM_SERVER_HOST}:8000/wasm-binaries/wasm32-unknown-unknown/fibo.wasm\",
+                    \"description\":\"http://${WASM_SERVER_HOST}:8000/fibo/open-api-description.json\",
+                    \"other\":[]
                 }
             }
         ],
-        "instructions": {
-            "modules": {
-                "fiboMod": {
-                    "fibo": {
-                        "paths": {
-                            "": {
-                                "get": {
-                                    "parameters": [{
-                                        "name": "iterations",
-                                        "in": "query",
-                                        "required": true,
-                                        "schema": {
-                                            "type": "integer",
-                                            "format": "int64"
+        \"instructions\": {
+            \"modules\": {
+                \"fiboMod\": {
+                    \"fibo\": {
+                        \"paths\": {
+                            \"\": {
+                                \"get\": {
+                                    \"parameters\": [{
+                                        \"name\": \"iterations\",
+                                        \"in\": \"query\",
+                                        \"required\": true,
+                                        \"schema\": {
+                                            \"type\": \"integer\",
+                                            \"format\": \"int64\"
                                         }
                                     }],
-                                    "responses": {
-                                        "200": {
-                                            "content": {
-                                                "application/json": {
-                                                    "schema": {
-                                                        "type": "integer",
-                                                        "format": "int64"
+                                    \"responses\": {
+                                        \"200\": {
+                                            \"content\": {
+                                                \"application/json\": {
+                                                    \"schema\": {
+                                                        \"type\": \"integer\",
+                                                        \"format\": \"int64\"
                                                     }
                                                 }
                                             }
@@ -129,12 +141,12 @@ curl \
                                 }
                             }
                         },
-                        "to": null
+                        \"to\": null
                     }
                 }
             }
         }
-    }' \
+    }" \
     http://localhost:5000/deploy
 ```
 
@@ -142,6 +154,8 @@ Then on success, you can count the (four-byte representation of) 7th Fibonacci n
 ```bash
 curl localhost:5000/0/modules/fiboMod/fibo?iterations=7
 ```
+The actual value can be found by following the returned URL pointing to the
+final computation result.
 ## Testing ML deployment
 
 As a test module you can use the example from [here](https://github.com/radu-matei/wasi-tensorflow-inference).
@@ -163,41 +177,41 @@ Now deploy the files with:
 curl \
     --header "Content-Type: application/json" \
     --request POST \
-    --data '{
-        "deploymentId": "1",
-        "modules": [
+    --data "{
+        \"deploymentId\": \"1\",
+        \"modules\": [
             {
-                "id": "1",
-                "name": "mobilenet",
-                "urls": {
-                    "binary": "http://localhost:8000/wasm-binaries/wasm32-wasi/ml.wasm",
-                    "description": "http://localhost:8000/object-inference-open-api-description.json",
-                    "other": [
-                        "http://localhost:8000/wasm-binaries/wasm32-wasi/ml.pb"
+                \"id\": \"1\",
+                \"name\": \"mobilenet\",
+                \"urls\": {
+                    \"binary\": \"http://${WASM_SERVER_HOST}:8000/wasm-binaries/wasm32-wasi/ml.wasm\",
+                    \"description\": \"http://${WASM_SERVER_HOST}:8000/object-inference-open-api-description.json\",
+                    \"other\": [
+                        \"http://${WASM_SERVER_HOST}:8000/wasm-binaries/wasm32-wasi/ml.pb\"
                     ]
                 }
             }
         ],
-        "instructions": {
-            "modules": {
-                "mobilenet": {
-                    "infer_from_ptrs": {
-                        "paths": {
-                            "": {
-                                "get": {
-                                    "parameters": [{
-                                        "name": "data",
-                                        "in": "requestBody",
-                                        "required": true,
-                                        "schema": {}
+        \"instructions\": {
+            \"modules\": {
+                \"mobilenet\": {
+                    \"infer_from_ptrs\": {
+                        \"paths\": {
+                            \"\": {
+                                \"get\": {
+                                    \"parameters\": [{
+                                        \"name\": \"data\",
+                                        \"in\": \"requestBody\",
+                                        \"required\": true,
+                                        \"schema\": {}
                                     }],
-                                    "responses": {
-                                        "200": {
-                                            "content": {
-                                                "application/json": {
-                                                    "schema": {
-                                                        "type": "integer",
-                                                        "format": "int64"
+                                    \"responses\": {
+                                        \"200\": {
+                                            \"content\": {
+                                                \"application/json\": {
+                                                    \"schema\": {
+                                                        \"type\": \"integer\",
+                                                        \"format\": \"int64\"
                                                     }
                                                 }
                                             }
@@ -206,12 +220,13 @@ curl \
                                 }
                             }
                         },
-                        "to": null
+                        \"to\": null
                     }
                 }
             }
         }
-    }' http://localhost:5000/deploy
+    }" \
+    http://localhost:5000/deploy
 ```
 
 After which you can test the inference with some image file via curl, eg.:
@@ -222,7 +237,10 @@ curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/m
 curl -F data=@./husky.jpeg http://localhost:5000/1/modules/mobilenet/infer_from_ptrs
 ```
 
-The supervisor will again, aften some time, respond with a four-byte representation of a 32-bit integer, that will match the line number in [the labels file](https://github.com/radu-matei/wasi-tensorflow-inference/blob/master/model/labels.txt).
+The supervisor will again, aften some time, respond with a URL, that can be
+followed to inspect the desired result integer that will match a line number
+in [the labels file](https://github.com/radu-matei/wasi-tensorflow-inference/blob/master/model/labels.txt)
+of the detected object in the input image.
 
 You can find another test image in the [wasi-inference repository in 'testdata'](https://github.com/radu-matei/wasi-tensorflow-inference/tree/master/testdata).
 
