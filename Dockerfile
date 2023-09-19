@@ -4,7 +4,7 @@
 ARG VARIANT="3.11-bullseye"
 FROM mcr.microsoft.com/vscode/devcontainers/python:0-${VARIANT} AS base
 
-LABEL org.opencontainers.image.source="https://github.com/LiquidAI-project/wasmiot-supervisor" 
+LABEL org.opencontainers.image.source="https://github.com/LiquidAI-project/wasmiot-supervisor"
 
 WORKDIR /app
 
@@ -27,7 +27,7 @@ RUN pip --disable-pip-version-check install -r /tmp/pip-tmp/requirements.txt && 
 COPY . .
 RUN pip --disable-pip-version-check install -v -e .
 
-CMD ["python", "-m" "host_app"]
+CMD ["python", "-m", "host_app"]
 
 FROM base AS run
 
