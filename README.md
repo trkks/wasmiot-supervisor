@@ -66,6 +66,22 @@ curl http://localhost:5000/
 ```
 The supervisor's logs in your terminal should show that a `GET` request was received.
 
+### Devcontainer
+Use VSCode for starting in container. NOTE: Be sure the network it uses is
+created i.e., before starting the container run:
+```
+docker network create wasmiot-net
+```
+NOTE that if you intend to run the devcontainer (or otherwise the supervisor in Docker) alongside orchestrator,
+the `wasmiot-net` network should be created by `docker compose` command using __orchestrator's setup__.
+So if this is your case, do not run the above command to create the network, but install orchestrator first!
+
+---
+
+To build the devcontainer image manually, run:
+```
+docker build -t ghcr.io/liquidai-project/wasmiot-supervisor:devcontainer --target vscode-devcontainer .
+```
 
 ## Testing deployment
 
@@ -377,16 +393,4 @@ To see all the results:
 
 ```bash
 curl http://localhost:5000/request-history
-```
-
-## Devcontainer
-Use VSCode for starting in container. NOTE: Be sure the network it uses is
-created i.e., before starting the container run:
-```
-docker network create wasmiot-net
-```
-
-To build the devcontainer image manually, run:
-```
-docker build -t ghcr.io/liquidai-project/wasmiot-supervisor:devcontainer --target vscode-devcontainer .
 ```
