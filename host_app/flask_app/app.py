@@ -656,9 +656,22 @@ def run_grayscale(module_name = None, function_name = None):
     cv2.imwrite("gsimg.png", result)
     return jsonify({'status': 'success'})
 
+@bp.route('/deploy/<deployment_id>', methods=['DELETE'])
+def deployment_delete(deployment_id):
+    '''
+    Forget the given deployment.
+    '''
+    if deployment_id in deployments:
+        del deployments[deployment_id]
+        return jsonify({'status': 'success'})
+    return endpoint_failed(request, 'deployment does not exist', 404)
+
 @bp.route('/deploy', methods=['POST'])
-def get_deployment():
-    """Parses the deployment from POST-request and enacts it. Request content-type needs to be 'application/json'"""
+def deployment_create():
+    '''
+    Request content-type needs to be 'application/json'
+    - POST: Parses the deployment from request and enacts it.
+    '''
     data = request.get_json(silent=True)
     if not data:
         return jsonify({'message': 'Non-existent or malformed deployment data'})
