@@ -36,11 +36,11 @@ Finally installing is done with:
 pip install -r requirements.txt
 ```
 
-Set up device configuration files, `device-description.json` and `wasmiot-device-description.json` to `configs` folder. You can use the template configs from the `tempconfigs` folder as a starting point:
+Set up device configuration files, `device-description.json` and `wasmiot-device-description.json` to `./instance/configs` folder. You can use the template configs from the `tempconfigs` folder as a starting point:
 
 ```bash
-mkdir -p configs
-cp -r tempconfigs/* configs
+mkdir -p intance/configs
+cp -r tempconfigs/* instance/configs
 # edit the copied files if necessary
 ```
 
