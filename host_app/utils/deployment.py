@@ -236,6 +236,15 @@ class Deployment:
             if parameter.get('in', None) == 'requestBody' and parameter.get('name', '') != ''
         ]
 
+        if 'requestBody' in operation:
+            media_type = assert_single_pop(operation['requestBody']['content'].keys())
+            if media_type not in FILE_TYPES:
+                raise NotImplementedError(f'Input file type not supported: "{media_type}"')
+            # Add the __single__ input file. TODO: The media type
+            # multipart/form-data might allow having
+            # multiple input files in a request.
+            file_parameters.append((assert_single_pop(input_file_paths.keys()), True))
+
         # Files given as input in request.
         for file_parameter, required_parameter in file_parameters:
             if file_parameter not in input_file_paths and required_parameter:
