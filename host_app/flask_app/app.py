@@ -4,6 +4,7 @@ This is a module :)
 
 from datetime import datetime
 from dataclasses import dataclass, field
+import itertools
 import logging
 import os
 import random
@@ -30,8 +31,9 @@ import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 
-from host_app.wasm_utils.wasm import wasm_modules, wasm_runtime
+from host_app.wasm_utils.wasm import wasm_modules
 from host_app.wasm_utils.wasm_api import MLModel, ModuleConfig
+from host_app.wasm_utils.wasmtime import WasmtimeRuntime
 
 from host_app.utils.configuration import get_device_description, get_wot_td
 from host_app.utils.routes import endpoint_failed
@@ -691,6 +693,10 @@ def deployment_create():
             errors=err.errors
         )
 
+    # Initialize the execution environment for this deployment, adding filepath
+    # roots for the modules' directories that they are able to use.
+    wasm_runtime = WasmtimeRuntime([str(data_file_path(m.name)) for m in module_configs])
+
     deployments[data["deploymentId"]] = Deployment(
         wasm_runtime,
         data["instructions"],
@@ -727,6 +733,13 @@ def upload_params():
     file.save(os.path.join(current_app.config['PARAMS_FOLDER'], filename))
     return jsonify({'status': 'success'})
 
+def data_file_path(module_name: str, name: str | None = None) -> Path:
+    """
+    Return path for a file that will eventually be made available for a
+    module
+    """
+    return Path(current_app.config['PARAMS_FOLDER']) / module_name / (name if name else "")
+
 def fetch_modules(modules) -> list[ModuleConfig]:
     """
     Fetch listed Wasm-modules, save them and their details and return data that
@@ -738,12 +751,15 @@ def fetch_modules(modules) -> list[ModuleConfig]:
         # Make all the requests at once.
         res_bin = requests.get(module["urls"]["binary"], timeout=5)
         res_desc = requests.get(module["urls"]["description"], timeout=5)
-        res_others = [requests.get(x, timeout=5) for x in module["urls"]["other"]]
+        # Map the names of data files to their responses. The names are used to
+        # save the files on disk for the module to use.
+        res_others = {name: requests.get(url, timeout=5)
+                      for name, url in module["urls"]["other"].items()}
 
         # Check that each request succeeded before continuing on.
         # Gather errors together.
         errors = []
-        for res in [res_bin, res_desc] + res_others:
+        for res in itertools.chain([res_bin, res_desc], res_others.values()):
             if not res.ok:
                 errors.append(res)
 
@@ -760,9 +776,8 @@ def fetch_modules(modules) -> list[ModuleConfig]:
 
         # Add other listed files related to the module.
         data_files = []
-        for res_other in res_others:
-            # FIXME Assuming only one url and that it is for the model.
-            other_path = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
+        for key, res_other in res_others.items():
+            other_path = data_file_path(module["name"], key)
 
             other_path.parent.mkdir(exist_ok=True, parents=True)
             with open(other_path, 'wb') as f:
