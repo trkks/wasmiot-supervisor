@@ -37,7 +37,7 @@ from host_app.wasm_utils.wasmtime import WasmtimeRuntime
 
 from host_app.utils.configuration import get_device_description, get_wot_td
 from host_app.utils.routes import endpoint_failed
-from host_app.utils.deployment import Deployment, CallData
+from host_app.utils.deployment import Deployment, CallData, module_mount_path
 
 
 _MODULE_DIRECTORY = 'wasm-modules'
@@ -695,7 +695,7 @@ def deployment_create():
 
     # Initialize the execution environment for this deployment, adding filepath
     # roots for the modules' directories that they are able to use.
-    wasm_runtime = WasmtimeRuntime([str(data_file_path(m.name)) for m in module_configs])
+    wasm_runtime = WasmtimeRuntime([str(module_mount_path(m.name)) for m in module_configs])
 
     deployments[data["deploymentId"]] = Deployment(
         wasm_runtime,
@@ -733,13 +733,6 @@ def upload_params():
     file.save(os.path.join(current_app.config['PARAMS_FOLDER'], filename))
     return jsonify({'status': 'success'})
 
-def data_file_path(module_name: str, name: str | None = None) -> Path:
-    """
-    Return path for a file that will eventually be made available for a
-    module
-    """
-    return Path(current_app.config['PARAMS_FOLDER']) / module_name / (name if name else "")
-
 def fetch_modules(modules) -> list[ModuleConfig]:
     """
     Fetch listed Wasm-modules, save them and their details and return data that
@@ -771,17 +764,17 @@ def fetch_modules(modules) -> list[ModuleConfig]:
         # Confirm that the module directory exists and create it if not TODO:
         # This would be better performed at startup.
         os.makedirs(current_app.config["MODULE_FOLDER"], exist_ok=True)
-        with open(module_path, 'wb') as f:
-            f.write(res_bin.content)
+        with open(module_path, 'wb') as filepath:
+            filepath.write(res_bin.content)
 
         # Add other listed files related to the module.
         data_files = []
         for key, res_other in res_others.items():
-            other_path = data_file_path(module["name"], key)
+            other_path = module_mount_path(module["name"], key)
 
             other_path.parent.mkdir(exist_ok=True, parents=True)
-            with open(other_path, 'wb') as f:
-                f.write(res_other.content)
+            with open(other_path, 'wb') as filepath:
+                filepath.write(res_other.content)
 
             data_files.append(other_path)
 

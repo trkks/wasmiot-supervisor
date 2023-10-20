@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import cv2
+from flask import current_app
 import numpy as np
 
-from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig
+from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig, WasmType
 
 
 FILE_TYPES = [
@@ -25,6 +26,13 @@ FILE_TYPES = [
 Media types that are considered files in chaining requests and thus will be
 sent with whatever the sender (requests-library) decides.
 """
+
+def module_mount_path(module_name: str, filename: str | None = None) -> Path:
+    """
+    Return path for a file that will eventually be made available for a
+    module
+    """
+    return Path(current_app.config['PARAMS_FOLDER']) / module_name / (filename if filename else "")
 
 EndpointArgs = str | list[str] | dict[str, Any] | None
 EndpointData = str | bytes | Path | None
@@ -173,121 +181,129 @@ class Deployment:
 
         return None
 
-    def interpret_args_for(
+    def prepare_for_running(
         self,
         module_name,
         function_name,
         args: dict,
-        input_file_paths: Dict[str, str]
-    ) -> Tuple[WasmModule, list[int], list[int]]:
+        request_filepaths: Dict[str, str]
+    ) -> Tuple[WasmModule, list[WasmType]]:
         '''
         Based on module's function's description, figure out what the
-        WebAssembly function will need as input (i.e., is it necessary to
-        allocate memory and pass in pointers instead of the raw args).
+        function will need as input. And set up the module environment for
+        reading or writing specified files.
 
         The result tuple will contain
-            1. the instantiated module,
-            2. arguments and argument pointers (if any) and
-            3. output pointers (if any).
+            1. The instantiated module.
+            2. Ordered arguments for the function.
         '''
         # Initialize the module.
         module = self.runtime.get_or_load_module(self.modules[module_name])
         if module is None:
-            # TODO: how should this error be handled?
             raise RuntimeError("Wasm module could not be loaded!")
 
         # Get the OpenAPI description for interpreting more complex arguments
-        # (e.g., lists and files).
+        # (e.g., lists, structs or files).
         _, operation = get_operation(assert_single_pop(
             self.instructions['modules'][module_name][function_name]['paths'].values()
         ))
 
-        # "Pointers" here are tuples of address and length (amount of bytes),
-        # but are stored "flat" for easily passing them to WebAssembly afterwards.
-        # They will be used whenever function input is not a WebAssembly
-        # primitive.
-        # - TODO: Write primitive-typed lists and strings to memory and add
-        # their pointers to the list first.
-        # - If a model (TODO: Or any other files) are attached to the module at
-        # deployment time, pass pointers of their contents to the function
-        # first.
-        # - Pointers to contents of external files come last in the list.
-        ptrs: list[int] = []
-
-        # Files attached to the module at deployment time.
-        for data_file in self.modules[module_name].data_files:
-            deployment_data_ptr, deployment_data_size = module.upload_data_file(data_file, 'alloc')
-            if deployment_data_ptr is None or deployment_data_size is None:
-                raise RuntimeError(f'Could not allocate memory for static file "{data_file}"')
-            ptrs += [deployment_data_ptr, deployment_data_size]
-
-        # Now that deployment-time parameters are set, map the more dynamic
-        # parameters given in request.
+        # TODO: When the component model is to be integrated, map arguments in
+        # request to the interface described in .wit.
 
         # Map the request args (query) into WebAssembly-typed (primitive)
         # arguments in an ordered list.
         types = module.get_arg_types(function_name)
         primitive_args = [t(arg) for arg, t in zip(args.values(), types)]
 
-        # get a list of expected file parameters
-        file_parameters = [
+        # Check that all the expected media types are supported.
+        # TODO: Could be done at deployment time.
+        found_unsupported_medias = list(filter(
+            lambda x: x not in FILE_TYPES,
+            operation.get('requestBody', {})
+                .get('content', {})
+                .keys()
+        ))
+
+        if found_unsupported_medias:
+            raise NotImplementedError(f'Input file types not supported: "{found_unsupported_medias}"')
+
+        # Get a list of expected file parameters. The 'name' is actually
+        # interpreted as a path relative to module root.
+        param_files = [
             (str(parameter['name']), bool(parameter.get('required', False)))
             for parameter in operation.get('parameters', [])
             if parameter.get('in', None) == 'requestBody' and parameter.get('name', '') != ''
         ]
+        request_body_files = (
+            [
+                # All 'pathed' files are required by default, and saving the
+                # schema could be useful (encoding etc.)
+                (path, schema | True)
+                for path, schema in
+                    get_file_schemas(
+                        assert_single_pop(
+                            operation['requestBody']
+                                .get('content', {})
+                        )
+                    )
+            ]
+            if ('multipart/form-data' in
+                operation.get('requestBody', {})
+                    .get('content', {})
+                    .keys())
+            else []
+        )
 
-        if 'requestBody' in operation:
-            media_type = assert_single_pop(operation['requestBody']['content'].keys())
-            if media_type not in FILE_TYPES:
-                raise NotImplementedError(f'Input file type not supported: "{media_type}"')
-            # Add the __single__ input file. TODO: The media type
-            # multipart/form-data might allow having
-            # multiple input files in a request.
-            file_parameters.append((assert_single_pop(input_file_paths.keys()), True))
+        # Lastly if the _response_ contains files, the matching filepaths need
+        # to be made available for the module to write as well.
+        response_media_type, response_media_schema = get_main_response_content_entry(operation)
+        response_files = (
+            [
+                # All response files are required by default as well.
+                (path, schema | True)
+                for path, schema in
+                    # HACK: Fake the schema field because the way the functions
+                    # are atm.
+                    get_file_schemas({ "schema": response_media_schema })
+            ]
+            if response_media_type == 'multipart/form-data'
+            else []
+        )
 
-        # Files given as input in request.
-        for file_parameter, required_parameter in file_parameters:
-            if file_parameter not in input_file_paths and required_parameter:
-                raise RuntimeError(f'"{file_parameter}" not found in input files')
-            file_path = input_file_paths[file_parameter]
-            file_ptr, file_size = module.upload_data_file(file_path, 'alloc')
-            if file_ptr is None or file_size is None:
-                raise RuntimeError(f'Could not allocate memory for input file "{file_path}"')
-            ptrs += [file_ptr, file_size]
+        if response_media_type == 'multipart/form-data' and \
+            response_media_schema['contentMediaType'] in FILE_TYPES:
+            response_files = []
 
-        # NOTE: the previous approach works for in the test inference case if it has
-        # been deployed with the model file (and no other files). The resulting ptrs
-        # list is [model_ptr, model_size, input_ptr, input_size] which is what the
-        # infer_from_ptrs function expects. However, in general this might require more work.
+        # Now actually handle mounting the files.
+        file_params = param_files + request_body_files + response_files
 
-        # Lastly if the _response_ is not a primitive, memory needs to be
-        # allocated for it as well for WebAssembly to write and host to read
-        # later.
-        result_ptrs = []
-        def alloc_ptrs():
-            '''
-            Allocate WebAssembly memory for two 32bit pointers:
-              - (1) for WebAssembly to _store address to_ its dynamically
-              allocated memory block (i.e., this will point to a pointer)
-              - (2) for WebAssembly to store the length of the dynamically
-              allocated memory block
-            '''
+        # Map all kinds of file parameters (optional or required) to actual
+        # files.
+        files_to_mount = set()
+        for request_field, temp_path in request_filepaths.items():
+            if (request_field, temp_path) not in files_to_mount:
+                files_to_mount.add((request_field, temp_path))
+            else:
+                raise RuntimeError(f'Input file "{temp_path}" already mapped to "{request_field}"')
 
-            ptr_ptr = module.run_function('alloc', [4])
-            size_ptr = module.run_function('alloc', [4])
-            if ptr_ptr is None or size_ptr is None:
-                raise RuntimeError('Could not allocate memory for result pointers')
+        # Check that required files are received.
+        required_files = set(filter(lambda x: x[1], file_params))
+        required_non_mounted_files = required_files - files_to_mount
+        if required_non_mounted_files:
+            raise RuntimeError(f'required input files not found:  {required_non_mounted_files}')
 
-            return [ptr_ptr, size_ptr]
+        # NOTE: Assuming the 'data files' have already at deployment time been
+        # saved at required paths.
+        # Set up the files given as input according to the paths specified in
+        # request remapping fields to temporary paths and then to module's
+        # expected paths.
+        for module_path, temp_path in files_to_mount:
+            with open(module_mount_path(module_name, module_path), "wb") as mountpath:
+                with open(temp_path, "rb") as datapath:
+                    mountpath.write(datapath.read())
 
-        _, response_media_schema = get_main_response_content_entry(operation)
-        # Check a single primitive is expected as response or if the result
-        # requires memory operations.
-        if not can_be_represented_as_wasm_primitive(response_media_schema):
-            # Allocate memory for the response.
-            result_ptrs = alloc_ptrs()
-
-        return module, primitive_args + ptrs, result_ptrs
+        return module, primitive_args
 
     def interpret_call_from(
         self,
@@ -433,3 +449,17 @@ def can_be_represented_as_wasm_primitive(schema) -> bool:
     '''
     type_ = schema.get('type', None)
     return type_ == 'integer' or type_ == 'float'
+
+def get_file_schemas(media_type_obj):
+    '''
+    Return iterator of tuples of (path, schema) for all fields interpretable as
+    files under multipart/form-data media type.
+    '''
+
+    return (
+        (_path, schema) for _path, schema in
+                media_type_obj.get('schema', {})
+                .get('properties', {})
+                .items()
+        if schema['type'] == 'string' and schema['contentMediaType'] in FILE_TYPES
+    )
