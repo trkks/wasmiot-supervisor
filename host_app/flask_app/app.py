@@ -112,6 +112,7 @@ class RequestEntry():
     request_files: Dict[str, str]
     work_queued_at: datetime
     result: Any = None
+    success: bool = False
 
     def __post_init__(self):
         # TODO: Hash the ID (and include args and time as well) because in this
@@ -180,7 +181,13 @@ def do_wasm_work(entry: RequestEntry):
 
 def make_history(entry: RequestEntry):
     '''Add entry to request history after executing its work'''
-    entry.result = do_wasm_work(entry)
+    try:
+        entry.result = do_wasm_work(entry)
+        entry.success = True
+    except Exception as err:
+        entry.result = str(err)
+        entry.success = False
+
     request_history.append(entry)
     return entry
 
@@ -363,7 +370,10 @@ def request_history_list(request_id=None):
     matching_requests = [x for x in request_history if x.request_id == request_id]
     if len(matching_requests) == 0:
         return endpoint_failed(request, 'no matching entry in history', 404)
-    return jsonify(path_to_string(matching_requests[0]))
+    first_match = matching_requests[0]
+    json_response = jsonify(path_to_string(first_match))
+    json_response.status_code = 200 if first_match.success else 500
+    return json_response
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
 def run_module_function(deployment_id, module_name, function_name):
