@@ -13,7 +13,9 @@ from pathlib import Path
 import queue
 import string
 import struct
+import sys
 import threading
+import traceback
 from typing import Any, Dict, Generator, Tuple
 
 import atexit
@@ -37,11 +39,12 @@ from host_app.wasm_utils.wasmtime import WasmtimeRuntime
 
 from host_app.utils.configuration import get_device_description, get_wot_td
 from host_app.utils.routes import endpoint_failed
-from host_app.utils.deployment import Deployment, CallData, module_mount_path
+from host_app.utils.deployment import Deployment, CallData
 
 
 _MODULE_DIRECTORY = 'wasm-modules'
 _PARAMS_FOLDER = 'wasm-params'
+INSTANCE_PARAMS_FOLDER = None
 
 OUTPUT_LENGTH_BYTES = 32 // 8
 """
@@ -129,6 +132,13 @@ request_history = []
 wasm_queue = queue.Queue()
 '''Queue of work for asynchronous WebAssembly execution'''
 
+def module_mount_path(module_name: str, filename: str | None = None) -> Path:
+    """
+    Return path for a file that will eventually be made available for a
+    module
+    """
+    return Path(INSTANCE_PARAMS_FOLDER, module_name, filename if filename else "")
+
 def do_wasm_work(entry: RequestEntry):
     '''
     Run a WebAssembly function and follow deployment instructions on what to
@@ -140,27 +150,24 @@ def do_wasm_work(entry: RequestEntry):
 
     deployment = deployments[entry.deployment_id]
 
-    try:
-        print(f'Preparing Wasm module "{entry.module_name}"...')
-        module, wasm_args, wasm_out_args = deployment.prepare_for_running(
-            entry.module_name,
-            entry.function_name,
-            entry.request_args,
-            entry.request_files
-        )
+    print(f'Preparing Wasm module "{entry.module_name}"...')
+    module, wasm_args = deployment.prepare_for_running(
+        module_mount_path,
+        entry.module_name,
+        entry.function_name,
+        entry.request_args,
+        entry.request_files
+    )
 
-        print(f'Running Wasm function "{entry.function_name}"...')
-        raw_output = module.run_function(entry.function_name, wasm_args + wasm_out_args)
-        print(f'Result: {raw_output}')
-    except Exception as err:
-        print(f"Error running WebAssembly function '{entry.function_name}':", err)
-        raise err
+    print(f'Running Wasm function "{entry.function_name}"...')
+    raw_output = module.run_function(entry.function_name, wasm_args)
+    print(f'Result: {raw_output}')
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
     # the whole chain).
     this_result, next_call = deployment.interpret_call_from(
-        module.name, entry.function_name, wasm_out_args, raw_output
+        module.name, entry.function_name, raw_output
     )
 
     if not isinstance(next_call, CallData):
@@ -185,6 +192,8 @@ def make_history(entry: RequestEntry):
         entry.result = do_wasm_work(entry)
         entry.success = True
     except Exception as err:
+        print(f"Error running WebAssembly function '{entry.function_name}'")
+        traceback.print_exc(file=sys.stdout)
         entry.result = str(err)
         entry.success = False
 
@@ -217,6 +226,11 @@ def create_app(*args, **kwargs) -> Flask:
         'MODULE_FOLDER': Path(app.instance_path, _MODULE_DIRECTORY),
         'PARAMS_FOLDER': Path(app.instance_path, _PARAMS_FOLDER),
     })
+
+    # Set this in order to later access module params folder that Flask set up
+    # on app creation.
+    global INSTANCE_PARAMS_FOLDER
+    INSTANCE_PARAMS_FOLDER = app.config['PARAMS_FOLDER']
 
     # Load config from instance/ -directory
     app.config.from_pyfile("config.py", silent=True)
@@ -808,6 +822,11 @@ def fetch_modules(modules) -> list[ModuleConfig]:
         )
         # combining options a) and b) from above:
         new_module_config.set_model_from_data_files()
+
+        # Create the params directory for this module's files.
+        new_module_mount_path = Path(module_mount_path(new_module_config.name))
+        if not new_module_mount_path.exists():
+            os.makedirs(new_module_mount_path, exist_ok=True)
 
         configs.append(new_module_config)
 
