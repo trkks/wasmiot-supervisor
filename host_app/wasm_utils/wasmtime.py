@@ -33,7 +33,9 @@ class WasmtimeRuntime(WasmRuntime):
         self._wasi.inherit_env()
         # Open directories for the modules to access at their root(?)
         for data_dir in data_dirs:
-            self._wasi.preopen_dir(data_dir, ".")
+            guest_dir = "."
+            print(f"Mounting {data_dir} to {guest_dir}")
+            self._wasi.preopen_dir(data_dir, guest_dir)
         self._store.set_wasi(self._wasi)
 
         self._link_remote_functions()

@@ -407,8 +407,8 @@ def run_module_function(deployment_id, module_name, function_name):
         input_file_path = os.path.join(
             current_app.config['PARAMS_FOLDER'],
             (
-                input_data_file.filename
-                if input_data_file is not None and input_data_file.filename is not None
+                input_data_file.name
+                if input_data_file is not None and input_data_file.name is not None
                 else ""
             )
         )
