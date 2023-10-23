@@ -142,7 +142,7 @@ def do_wasm_work(entry: RequestEntry):
 
     try:
         print(f'Preparing Wasm module "{entry.module_name}"...')
-        module, wasm_args, wasm_out_args = deployment.interpret_args_for(
+        module, wasm_args, wasm_out_args = deployment.prepare_for_running(
             entry.module_name,
             entry.function_name,
             entry.request_args,
@@ -154,7 +154,7 @@ def do_wasm_work(entry: RequestEntry):
         print(f'Result: {raw_output}')
     except Exception as err:
         print(f"Error running WebAssembly function '{entry.function_name}':", err)
-        return str(err)
+        raise err
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
