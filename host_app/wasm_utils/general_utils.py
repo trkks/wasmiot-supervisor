@@ -4,7 +4,7 @@ import os
 import platform
 import struct
 from time import sleep, time
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import cv2
 import requests

@@ -22,7 +22,7 @@ SERIALIZED_MODULE_POSTFIX = ".SERIALIZED.wasm"
 
 class WasmtimeRuntime(WasmRuntime):
     """Wasmtime runtime class."""
-    def __init__(self) -> None:
+    def __init__(self, data_dirs=[]) -> None:
         super().__init__()
         self._engine = Engine(Config())
         self._store = Store(self._engine)
@@ -31,6 +31,11 @@ class WasmtimeRuntime(WasmRuntime):
         self._wasi = WasiConfig()
         self._wasi.inherit_stdout()
         self._wasi.inherit_env()
+        # Open directories for the modules to access at their root(?)
+        for data_dir in data_dirs:
+            guest_dir = "."
+            print(f"Mounting {data_dir} to {guest_dir}")
+            self._wasi.preopen_dir(data_dir, guest_dir)
         self._store.set_wasi(self._wasi)
 
         self._link_remote_functions()

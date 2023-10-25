@@ -4,6 +4,7 @@ This is a module :)
 
 from datetime import datetime
 from dataclasses import dataclass, field
+import itertools
 import logging
 import os
 import random
@@ -12,7 +13,9 @@ from pathlib import Path
 import queue
 import string
 import struct
+import sys
 import threading
+import traceback
 from typing import Any, Dict, Generator, Tuple
 
 import atexit
@@ -30,8 +33,9 @@ import numpy as np
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 
-from host_app.wasm_utils.wasm import wasm_modules, wasm_runtime
+from host_app.wasm_utils.wasm import wasm_modules
 from host_app.wasm_utils.wasm_api import MLModel, ModuleConfig
+from host_app.wasm_utils.wasmtime import WasmtimeRuntime
 
 from host_app.utils.configuration import get_device_description, get_wot_td
 from host_app.utils.routes import endpoint_failed
@@ -40,6 +44,7 @@ from host_app.utils.deployment import Deployment, CallData
 
 _MODULE_DIRECTORY = 'wasm-modules'
 _PARAMS_FOLDER = 'wasm-params'
+INSTANCE_PARAMS_FOLDER = None
 
 OUTPUT_LENGTH_BYTES = 32 // 8
 """
@@ -110,6 +115,7 @@ class RequestEntry():
     request_files: Dict[str, str]
     work_queued_at: datetime
     result: Any = None
+    success: bool = False
 
     def __post_init__(self):
         # TODO: Hash the ID (and include args and time as well) because in this
@@ -126,6 +132,13 @@ request_history = []
 wasm_queue = queue.Queue()
 '''Queue of work for asynchronous WebAssembly execution'''
 
+def module_mount_path(module_name: str, filename: str | None = None) -> Path:
+    """
+    Return path for a file that will eventually be made available for a
+    module
+    """
+    return Path(INSTANCE_PARAMS_FOLDER, module_name, filename if filename else "")
+
 def do_wasm_work(entry: RequestEntry):
     '''
     Run a WebAssembly function and follow deployment instructions on what to
@@ -137,27 +150,24 @@ def do_wasm_work(entry: RequestEntry):
 
     deployment = deployments[entry.deployment_id]
 
-    try:
-        print(f'Preparing Wasm module "{entry.module_name}"...')
-        module, wasm_args, wasm_out_args = deployment.interpret_args_for(
-            entry.module_name,
-            entry.function_name,
-            entry.request_args,
-            entry.request_files
-        )
+    print(f'Preparing Wasm module "{entry.module_name}"...')
+    module, wasm_args = deployment.prepare_for_running(
+        module_mount_path,
+        entry.module_name,
+        entry.function_name,
+        entry.request_args,
+        entry.request_files
+    )
 
-        print(f'Running Wasm function "{entry.function_name}"...')
-        raw_output = module.run_function(entry.function_name, wasm_args + wasm_out_args)
-        print(f'Result: {raw_output}')
-    except Exception as err:
-        print(f"Error running WebAssembly function '{entry.function_name}':", err)
-        return str(err)
+    print(f'Running Wasm function "{entry.function_name}"...')
+    raw_output = module.run_function(entry.function_name, wasm_args)
+    print(f'Result: {raw_output}')
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
     # the whole chain).
     this_result, next_call = deployment.interpret_call_from(
-        module.name, entry.function_name, wasm_out_args, raw_output
+        module.name, entry.function_name, raw_output
     )
 
     if not isinstance(next_call, CallData):
@@ -178,7 +188,15 @@ def do_wasm_work(entry: RequestEntry):
 
 def make_history(entry: RequestEntry):
     '''Add entry to request history after executing its work'''
-    entry.result = do_wasm_work(entry)
+    try:
+        entry.result = do_wasm_work(entry)
+        entry.success = True
+    except Exception as err:
+        print(f"Error running WebAssembly function '{entry.function_name}'")
+        traceback.print_exc(file=sys.stdout)
+        entry.result = str(err)
+        entry.success = False
+
     request_history.append(entry)
     return entry
 
@@ -208,6 +226,11 @@ def create_app(*args, **kwargs) -> Flask:
         'MODULE_FOLDER': Path(app.instance_path, _MODULE_DIRECTORY),
         'PARAMS_FOLDER': Path(app.instance_path, _PARAMS_FOLDER),
     })
+
+    # Set this in order to later access module params folder that Flask set up
+    # on app creation.
+    global INSTANCE_PARAMS_FOLDER
+    INSTANCE_PARAMS_FOLDER = app.config['PARAMS_FOLDER']
 
     # Load config from instance/ -directory
     app.config.from_pyfile("config.py", silent=True)
@@ -361,7 +384,10 @@ def request_history_list(request_id=None):
     matching_requests = [x for x in request_history if x.request_id == request_id]
     if len(matching_requests) == 0:
         return endpoint_failed(request, 'no matching entry in history', 404)
-    return jsonify(path_to_string(matching_requests[0]))
+    first_match = matching_requests[0]
+    json_response = jsonify(path_to_string(first_match))
+    json_response.status_code = 200 if first_match.success else 500
+    return json_response
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
 def run_module_function(deployment_id, module_name, function_name):
@@ -381,8 +407,8 @@ def run_module_function(deployment_id, module_name, function_name):
         input_file_path = os.path.join(
             current_app.config['PARAMS_FOLDER'],
             (
-                input_data_file.filename
-                if input_data_file is not None and input_data_file.filename is not None
+                input_data_file.name
+                if input_data_file is not None and input_data_file.name is not None
                 else ""
             )
         )
@@ -656,9 +682,22 @@ def run_grayscale(module_name = None, function_name = None):
     cv2.imwrite("gsimg.png", result)
     return jsonify({'status': 'success'})
 
+@bp.route('/deploy/<deployment_id>', methods=['DELETE'])
+def deployment_delete(deployment_id):
+    '''
+    Forget the given deployment.
+    '''
+    if deployment_id in deployments:
+        del deployments[deployment_id]
+        return jsonify({'status': 'success'})
+    return endpoint_failed(request, 'deployment does not exist', 404)
+
 @bp.route('/deploy', methods=['POST'])
-def get_deployment():
-    """Parses the deployment from POST-request and enacts it. Request content-type needs to be 'application/json'"""
+def deployment_create():
+    '''
+    Request content-type needs to be 'application/json'
+    - POST: Parses the deployment from request and enacts it.
+    '''
     data = request.get_json(silent=True)
     if not data:
         return jsonify({'message': 'Non-existent or malformed deployment data'})
@@ -677,6 +716,10 @@ def get_deployment():
             status_code=500,
             errors=err.errors
         )
+
+    # Initialize the execution environment for this deployment, adding filepath
+    # roots for the modules' directories that they are able to use.
+    wasm_runtime = WasmtimeRuntime([str(module_mount_path(m.name)) for m in module_configs])
 
     deployments[data["deploymentId"]] = Deployment(
         wasm_runtime,
@@ -725,12 +768,15 @@ def fetch_modules(modules) -> list[ModuleConfig]:
         # Make all the requests at once.
         res_bin = requests.get(module["urls"]["binary"], timeout=5)
         res_desc = requests.get(module["urls"]["description"], timeout=5)
-        res_others = [requests.get(x, timeout=5) for x in module["urls"]["other"]]
+        # Map the names of data files to their responses. The names are used to
+        # save the files on disk for the module to use.
+        res_others = {name: requests.get(url, timeout=5)
+                      for name, url in module["urls"]["other"].items()}
 
         # Check that each request succeeded before continuing on.
         # Gather errors together.
         errors = []
-        for res in [res_bin, res_desc] + res_others:
+        for res in itertools.chain([res_bin, res_desc], res_others.values()):
             if not res.ok:
                 errors.append(res)
 
@@ -742,18 +788,17 @@ def fetch_modules(modules) -> list[ModuleConfig]:
         # Confirm that the module directory exists and create it if not TODO:
         # This would be better performed at startup.
         os.makedirs(current_app.config["MODULE_FOLDER"], exist_ok=True)
-        with open(module_path, 'wb') as f:
-            f.write(res_bin.content)
+        with open(module_path, 'wb') as filepath:
+            filepath.write(res_bin.content)
 
         # Add other listed files related to the module.
         data_files = []
-        for res_other in res_others:
-            # FIXME Assuming only one url and that it is for the model.
-            other_path = Path(current_app.config['PARAMS_FOLDER']) / module['name'] / 'model'
+        for key, res_other in res_others.items():
+            other_path = module_mount_path(module["name"], key)
 
             other_path.parent.mkdir(exist_ok=True, parents=True)
-            with open(other_path, 'wb') as f:
-                f.write(res_other.content)
+            with open(other_path, 'wb') as filepath:
+                filepath.write(res_other.content)
 
             data_files.append(other_path)
 
@@ -777,6 +822,11 @@ def fetch_modules(modules) -> list[ModuleConfig]:
         )
         # combining options a) and b) from above:
         new_module_config.set_model_from_data_files()
+
+        # Create the params directory for this module's files.
+        new_module_mount_path = Path(module_mount_path(new_module_config.name))
+        if not new_module_mount_path.exists():
+            os.makedirs(new_module_mount_path, exist_ok=True)
 
         configs.append(new_module_config)
 

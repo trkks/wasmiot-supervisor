@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeAlias
 
 ByteType: TypeAlias = bytes | bytearray
 
+WasmType = int | float
+"""Types that can be used in WebAssembly."""
 
 class WasmRuntimeNotSetError(RuntimeError):
     """Error raised when trying to use a functionality which requires a runtime
