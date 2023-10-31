@@ -38,28 +38,23 @@ class MountPathFile:
     MediaTypeObject = dict[str, Any]
 
     @classmethod
-    def from_metadata(cls, path: str, file_metadata: dict[str, str]): # -> MountPathFile:
-        '''
-        Create a MountPathFile from the JSON schema used in this project for
-        describing files and their paths
-        '''
-        assert file_metadata['type'] == 'string', \
-            'Only string types supported for multipart/form-data'
-        # NOTE: The other encoding field is not regarded here.
-        return cls(path, file_metadata['contentMediaType'])
-
-    @classmethod
-    def list_from_multipart(cls, schema: dict[str, Any]): # -> list[MountPathFile]:
+    def list_from_multipart(cls, multipart: dict[str, Any]): # -> list[MountPathFile]:
         '''
         Extract list of files to mount when multipart/form-data is used to
-        describe a schema of multiple files
+        describe a schema of multiple files.
+
+        Create a MountPathFiles from the JSON schema used in this project for
+        describing files and their paths.
         '''
+        schema = multipart['schema']
         assert schema['type'] == 'object', 'Only object schemas supported'
         assert schema['properties'], 'No properties defined for multipart schema'
 
         mounts = []
-        for path, file_metadata in schema['properties'].items():
-            mount = MountPathFile.from_metadata(path, file_metadata)
+        for path, _ in get_file_schemas(multipart):
+            media_type = multipart['encoding'][path]['contentType']
+            # NOTE: The other encoding field ('format') is not regarded here.
+            mount = cls(path, media_type)
             mounts.append(mount)
 
         return mounts
@@ -102,7 +97,7 @@ class Endpoint:
             url,
             target_method,
             operation_obj['parameters'],
-            response_media,
+            (response_media[0], response_media[1].get('schema', None)),
             request_media
         )
 
@@ -218,7 +213,6 @@ class Deployment:
         request_body_paths = (
             MountPathFile.list_from_multipart(
                 top_level_content['multipart/form-data']
-                    .get('schema', {})
             )
             if 'multipart/form-data' in top_level_content
             # Only multipart/form-data is supported for file mounts.
@@ -255,10 +249,10 @@ class Deployment:
 
         # Lastly if the _response_ contains files, the matching filepaths need
         # to be made available for the module to write as well.
-        response_media_type, response_media_schema = get_main_response_content_entry(operation)
+        response_media_type, response_media_obj = get_main_response_content_entry(operation)
         response_files = (
             MountPathFile.list_from_multipart(
-                response_media_schema
+                response_media_obj
             )
             if 'multipart/form-data' == response_media_type
             # Only multipart/form-data is supported for file mounts.
@@ -366,7 +360,7 @@ class Deployment:
         response_media = get_main_response_content_entry(operation_obj)
 
         source_endpoint_result = self.parse_endpoint_result(
-            wasm_output, *response_media
+            wasm_output, response_media[0], response_media[1].get('schema', {})
         )
 
         # Check if there still is stuff to do.
@@ -433,7 +427,7 @@ def validate_operation(method, operation_obj) -> Tuple[str, dict[str, Any]]:
 
 def get_main_response_content_entry(operation_obj):
     '''
-    Dig out the one and only one _response_ __media type__ and matching __schema
+    Dig out the one and only one _response_ __media type__ and matching __media type
     object__ from under the OpenAPI v3.1.0 operation object's content field.
 
     NOTE: 200 is the only assumed response code.
@@ -444,7 +438,7 @@ def get_main_response_content_entry(operation_obj):
     if media_type_and_object is None:
         return "", {}
     media_type, media_type_object = media_type_and_object
-    return media_type, media_type_object.get('schema', {})
+    return media_type, media_type_object
 
 def can_be_represented_as_wasm_primitive(schema) -> bool:
     '''
@@ -461,9 +455,11 @@ def get_file_schemas(media_type_obj):
     '''
 
     return (
-        (_path, schema) for _path, schema in
+        (path, schema) for path, schema in
                 media_type_obj.get('schema', {})
                 .get('properties', {})
                 .items()
-        if schema['type'] == 'string' and schema['contentMediaType'] in FILE_TYPES
+        if schema['type'] == 'string' \
+            and schema['format'] == 'binary' \
+            and media_type_obj['encoding'][path]['contentType'] in FILE_TYPES
     )
