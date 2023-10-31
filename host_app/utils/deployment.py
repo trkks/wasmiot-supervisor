@@ -83,9 +83,9 @@ class Endpoint:
         Create an Endpoint object from an endpoint's (partly OpenAPI v3.1.0 path
         item object) description.
         '''
-        path = description.path
+        path = description['path']
         target_method, operation_obj = validate_operation(
-            description.operation.method, description.operation.body
+            description['operation']['method'], description['operation']['body']
         )
         response_media = get_main_response_content_entry(operation_obj)
 
@@ -96,11 +96,7 @@ class Endpoint:
             # NOTE: The first media type is selected.
             request_media = assert_single_pop(rbody['content'].items())
 
-        server = description.url
-        if server is None:
-            # TODO: Can this happen? What should be the default?
-            server = {'url': ""}
-        url = server['url'].rstrip('/') + path
+        url = description['url'].rstrip('/') + path
 
         return cls(
             url,
@@ -425,10 +421,10 @@ def validate_operation(method, operation_obj) -> Tuple[str, dict[str, Any]]:
     Dig out the one and only one operation method and object from the OpenAPI
     v3.1.0 path object.
     '''
-    open_api_3_1_0_operations = set(
+    open_api_3_1_0_operations = set((
         'get', 'put', 'post', 'delete',
         'options', 'head', 'patch', 'trace'
-    )
+    ))
     assert method in open_api_3_1_0_operations, f'bad operation method: {method}'
 
     # TODO: Check that the operation object is valid.
