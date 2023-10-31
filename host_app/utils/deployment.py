@@ -80,17 +80,13 @@ class Endpoint:
     @classmethod
     def from_openapi(cls, description: dict[str, Any]):
         '''
-        Create an Endpoint object from an endpoint's OpenAPI v3.1.0
-        description path item object.
+        Create an Endpoint object from an endpoint's (partly OpenAPI v3.1.0 path
+        item object) description.
         '''
-        # NOTE: The deployment should only contain one path per function.
-        path_and_obj = assert_single_pop(description['paths'].items())
-        if path_and_obj is None:
-            # TODO: Can this happen? And what should be the defaults?
-            path, path_and_obj = "", {}
-        path, path_obj = path_and_obj
-
-        target_method, operation_obj = get_operation(path_obj)
+        path = description.path
+        target_method, operation_obj = validate_operation(
+            description.operation.method, description.operation.body
+        )
         response_media = get_main_response_content_entry(operation_obj)
 
         # Select specific media type based on the possible _input_ to this
@@ -100,7 +96,7 @@ class Endpoint:
             # NOTE: The first media type is selected.
             request_media = assert_single_pop(rbody['content'].items())
 
-        server = assert_single_pop(description['servers'])
+        server = description.url
         if server is None:
             # TODO: Can this happen? What should be the default?
             server = {'url': ""}
@@ -217,9 +213,7 @@ class Deployment:
         whether they are mandatory or not
         '''
         # Get the OpenAPI description for interpreting file mounts.
-        _, operation = get_operation(assert_single_pop(
-            self.instructions['modules'][module.name][function_name]['paths'].values()
-        ))
+        operation = self.instructions['modules'][module.name][function_name]['from']['operation']['body']
 
         # TODO: When the component model is to be integrated, map arguments in
         # request to the interface described in .wit.
@@ -369,12 +363,10 @@ class Deployment:
 
         # Transform the raw Wasm result into the described output of _this_
         # endpoint for sending to the next endpoint.
-        source_func_path = assert_single_pop(
-            self.instructions['modules'][module_name][function_name]['paths'].values()
-        )
+
         # NOTE: Assuming the actual method used was the one described in
         # deployment.
-        _, operation_obj = get_operation(source_func_path)
+        operation_obj = self.instructions['modules'][module_name][function_name]['from']['operation']['body']
         response_media = get_main_response_content_entry(operation_obj)
 
         source_endpoint_result = self.parse_endpoint_result(
@@ -428,20 +420,20 @@ def assert_single_pop(iterable) -> Any | None:
     assert item and next(iterator, None) is None, 'Only one item expected'
     return item
 
-def get_operation(path_obj) -> Tuple[str, dict[str, Any]]:
+def validate_operation(method, operation_obj) -> Tuple[str, dict[str, Any]]:
     '''
     Dig out the one and only one operation method and object from the OpenAPI
     v3.1.0 path object.
     '''
-    open_api_3_1_0_operations = [
+    open_api_3_1_0_operations = set(
         'get', 'put', 'post', 'delete',
         'options', 'head', 'patch', 'trace'
-    ]
-    target_method = assert_single_pop(
-        (x for x in path_obj.keys() if x.lower() in open_api_3_1_0_operations)
     )
+    assert method in open_api_3_1_0_operations, f'bad operation method: {method}'
 
-    return str(target_method), path_obj[str(target_method).lower()]
+    # TODO: Check that the operation object is valid.
+
+    return method, operation_obj
 
 def get_main_response_content_entry(operation_obj):
     '''
