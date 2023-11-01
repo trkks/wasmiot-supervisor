@@ -5,6 +5,7 @@ their instructions.
 '''
 
 from dataclasses import dataclass, field
+from enum import Enum
 from functools import reduce
 import json
 from pathlib import Path
@@ -24,6 +25,12 @@ Media types that are considered files in chaining requests and thus will be
 sent with whatever the sender (requests-library) decides.
 """
 
+class MountStage(Enum):
+    '''
+    Defines the stage at which a file is mounted.
+    '''
+    DEPLOYMENT = 'deployment'
+    EXECUTION = 'execution'
 
 @dataclass(eq=True, frozen=True)
 class MountPathFile:
@@ -32,6 +39,7 @@ class MountPathFile:
     '''
     mount_path: str
     media_type: str
+    stage: MountStage
     encoding: str = 'base64'
     type: str = 'string'
 
@@ -51,10 +59,10 @@ class MountPathFile:
         assert schema['properties'], 'No properties defined for multipart schema'
 
         mounts = []
-        for path, _ in get_file_schemas(multipart):
+        for path, schema in get_file_schemas(multipart):
             media_type = multipart['encoding'][path]['contentType']
             # NOTE: The other encoding field ('format') is not regarded here.
-            mount = cls(path, media_type)
+            mount = cls(path, media_type, MountStage(schema['stage']))
             mounts.append(mount)
 
         return mounts
@@ -232,7 +240,7 @@ class Deployment:
         param_files = [
             (
                 MountPathFile(
-                    str(parameter['name']), 'application/octet-stream'
+                    str(parameter['name']), 'application/octet-stream', MountStage.EXECUTION
                 ),
                 bool(parameter.get('required', False))
             )
@@ -293,21 +301,36 @@ class Deployment:
         # Get the mounts described for this module for checking requirementes
         # and mapping to actual received files in this request.
         mounts = self.mounts_for(module, function_name)
-        all_mount_paths = set(map(lambda x: x[0].mount_path, mounts))
+        execution_stage_mount_paths: Set[str] = set(map(
+            lambda x: x[0].mount_path,
+            filter(
+                lambda y: y[0].stage == MountStage.EXECUTION,
+                mounts
+            )
+        ))
+        deployment_stage_mount_paths: Set[str] = set(map(
+            lambda x: x[0].mount_path,
+            filter(
+                lambda y: y[0].stage == MountStage.DEPLOYMENT,
+                mounts
+            )
+        ))
 
         # Map all kinds of file parameters (optional or required) to expected
         # mount paths and actual files _once_.
-        received_filepaths: Set[str] = set()
-        for mount_path, temp_path in request_filepaths.items():
+        # NOTE: Assuming the deployment filepaths have been handled already.
+        received_filepaths: Set[str] = deployment_stage_mount_paths
+        for request_mount_path, temp_path in request_filepaths.items():
             # Check that the file is expected.
-            if mount_path not in all_mount_paths:
-                raise RuntimeError(f'Unexpected input file "{mount_path}"')
+            if request_mount_path not in execution_stage_mount_paths:
+                raise RuntimeError(f'Unexpected input file "{request_mount_path}"')
 
-            # Check that the file is not already mapped.
-            if mount_path not in received_filepaths:
-                received_filepaths.add(mount_path)
+            # Check that the file is not already mapped. NOTE: This prevents
+            # overwriting deployment stage files.
+            if request_mount_path not in received_filepaths:
+                received_filepaths.add(request_mount_path)
             else:
-                raise RuntimeError(f'Input file "{temp_path}" already mapped to "{mount_path}"')
+                raise RuntimeError(f'Input file "{temp_path}" already mapped to "{request_mount_path}"')
 
         # Get the paths of _required_ files.
         required_mount_paths: Set[str] = set(
