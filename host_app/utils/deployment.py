@@ -5,6 +5,7 @@ their instructions.
 '''
 
 from dataclasses import dataclass, field
+from enum import Enum
 from functools import reduce
 import json
 from pathlib import Path
@@ -24,6 +25,12 @@ Media types that are considered files in chaining requests and thus will be
 sent with whatever the sender (requests-library) decides.
 """
 
+class MountStage(Enum):
+    '''
+    Defines the stage at which a file is mounted.
+    '''
+    DEPLOYMENT = 'deployment'
+    EXECUTION = 'execution'
 
 @dataclass(eq=True, frozen=True)
 class MountPathFile:
@@ -32,34 +39,30 @@ class MountPathFile:
     '''
     mount_path: str
     media_type: str
+    stage: MountStage
     encoding: str = 'base64'
     type: str = 'string'
 
     MediaTypeObject = dict[str, Any]
 
     @classmethod
-    def from_metadata(cls, path: str, file_metadata: dict[str, str]): # -> MountPathFile:
-        '''
-        Create a MountPathFile from the JSON schema used in this project for
-        describing files and their paths
-        '''
-        assert file_metadata['type'] == 'string', \
-            'Only string types supported for multipart/form-data'
-        # NOTE: The other encoding field is not regarded here.
-        return cls(path, file_metadata['contentMediaType'])
-
-    @classmethod
-    def list_from_multipart(cls, schema: dict[str, Any]): # -> list[MountPathFile]:
+    def list_from_multipart(cls, multipart: dict[str, Any]): # -> list[MountPathFile]:
         '''
         Extract list of files to mount when multipart/form-data is used to
-        describe a schema of multiple files
+        describe a schema of multiple files.
+
+        Create a MountPathFiles from the JSON schema used in this project for
+        describing files and their paths.
         '''
+        schema = multipart['schema']
         assert schema['type'] == 'object', 'Only object schemas supported'
         assert schema['properties'], 'No properties defined for multipart schema'
 
         mounts = []
-        for path, file_metadata in schema['properties'].items():
-            mount = MountPathFile.from_metadata(path, file_metadata)
+        for path, schema in get_file_schemas(multipart):
+            media_type = multipart['encoding'][path]['contentType']
+            # NOTE: The other encoding field ('format') is not regarded here.
+            mount = cls(path, media_type, MountStage(schema['stage']))
             mounts.append(mount)
 
         return mounts
@@ -80,17 +83,13 @@ class Endpoint:
     @classmethod
     def from_openapi(cls, description: dict[str, Any]):
         '''
-        Create an Endpoint object from an endpoint's OpenAPI v3.1.0
-        description path item object.
+        Create an Endpoint object from an endpoint's (partly OpenAPI v3.1.0 path
+        item object) description.
         '''
-        # NOTE: The deployment should only contain one path per function.
-        path_and_obj = assert_single_pop(description['paths'].items())
-        if path_and_obj is None:
-            # TODO: Can this happen? And what should be the defaults?
-            path, path_and_obj = "", {}
-        path, path_obj = path_and_obj
-
-        target_method, operation_obj = get_operation(path_obj)
+        path = description['path']
+        target_method, operation_obj = validate_operation(
+            description['operation']['method'], description['operation']['body']
+        )
         response_media = get_main_response_content_entry(operation_obj)
 
         # Select specific media type based on the possible _input_ to this
@@ -100,17 +99,13 @@ class Endpoint:
             # NOTE: The first media type is selected.
             request_media = assert_single_pop(rbody['content'].items())
 
-        server = assert_single_pop(description['servers'])
-        if server is None:
-            # TODO: Can this happen? What should be the default?
-            server = {'url': ""}
-        url = server['url'].rstrip('/') + path
+        url = description['url'].rstrip('/') + path
 
         return cls(
             url,
             target_method,
             operation_obj['parameters'],
-            response_media,
+            (response_media[0], response_media[1].get('schema', None)),
             request_media
         )
 
@@ -217,9 +212,7 @@ class Deployment:
         whether they are mandatory or not
         '''
         # Get the OpenAPI description for interpreting file mounts.
-        _, operation = get_operation(assert_single_pop(
-            self.instructions['modules'][module.name][function_name]['paths'].values()
-        ))
+        operation = self.instructions['modules'][module.name][function_name]['from']['operation']['body']
 
         # TODO: When the component model is to be integrated, map arguments in
         # request to the interface described in .wit.
@@ -228,7 +221,6 @@ class Deployment:
         request_body_paths = (
             MountPathFile.list_from_multipart(
                 top_level_content['multipart/form-data']
-                    .get('schema', {})
             )
             if 'multipart/form-data' in top_level_content
             # Only multipart/form-data is supported for file mounts.
@@ -248,7 +240,7 @@ class Deployment:
         param_files = [
             (
                 MountPathFile(
-                    str(parameter['name']), 'application/octet-stream'
+                    str(parameter['name']), 'application/octet-stream', MountStage.EXECUTION
                 ),
                 bool(parameter.get('required', False))
             )
@@ -265,10 +257,10 @@ class Deployment:
 
         # Lastly if the _response_ contains files, the matching filepaths need
         # to be made available for the module to write as well.
-        response_media_type, response_media_schema = get_main_response_content_entry(operation)
+        response_media_type, response_media_obj = get_main_response_content_entry(operation)
         response_files = (
             MountPathFile.list_from_multipart(
-                response_media_schema
+                response_media_obj
             )
             if 'multipart/form-data' == response_media_type
             # Only multipart/form-data is supported for file mounts.
@@ -309,21 +301,36 @@ class Deployment:
         # Get the mounts described for this module for checking requirementes
         # and mapping to actual received files in this request.
         mounts = self.mounts_for(module, function_name)
-        all_mount_paths = set(map(lambda x: x[0].mount_path, mounts))
+        execution_stage_mount_paths: Set[str] = set(map(
+            lambda x: x[0].mount_path,
+            filter(
+                lambda y: y[0].stage == MountStage.EXECUTION,
+                mounts
+            )
+        ))
+        deployment_stage_mount_paths: Set[str] = set(map(
+            lambda x: x[0].mount_path,
+            filter(
+                lambda y: y[0].stage == MountStage.DEPLOYMENT,
+                mounts
+            )
+        ))
 
         # Map all kinds of file parameters (optional or required) to expected
         # mount paths and actual files _once_.
-        received_filepaths: Set[str] = set()
-        for mount_path, temp_path in request_filepaths.items():
+        # NOTE: Assuming the deployment filepaths have been handled already.
+        received_filepaths: Set[str] = deployment_stage_mount_paths
+        for request_mount_path, temp_path in request_filepaths.items():
             # Check that the file is expected.
-            if mount_path not in all_mount_paths:
-                raise RuntimeError(f'Unexpected input file "{mount_path}"')
+            if request_mount_path not in execution_stage_mount_paths:
+                raise RuntimeError(f'Unexpected input file "{request_mount_path}"')
 
-            # Check that the file is not already mapped.
-            if mount_path not in received_filepaths:
-                received_filepaths.add(mount_path)
+            # Check that the file is not already mapped. NOTE: This prevents
+            # overwriting deployment stage files.
+            if request_mount_path not in received_filepaths:
+                received_filepaths.add(request_mount_path)
             else:
-                raise RuntimeError(f'Input file "{temp_path}" already mapped to "{mount_path}"')
+                raise RuntimeError(f'Input file "{temp_path}" already mapped to "{request_mount_path}"')
 
         # Get the paths of _required_ files.
         required_mount_paths: Set[str] = set(
@@ -369,16 +376,14 @@ class Deployment:
 
         # Transform the raw Wasm result into the described output of _this_
         # endpoint for sending to the next endpoint.
-        source_func_path = assert_single_pop(
-            self.instructions['modules'][module_name][function_name]['paths'].values()
-        )
+
         # NOTE: Assuming the actual method used was the one described in
         # deployment.
-        _, operation_obj = get_operation(source_func_path)
+        operation_obj = self.instructions['modules'][module_name][function_name]['from']['operation']['body']
         response_media = get_main_response_content_entry(operation_obj)
 
         source_endpoint_result = self.parse_endpoint_result(
-            wasm_output, *response_media
+            wasm_output, response_media[0], response_media[1].get('schema', {})
         )
 
         # Check if there still is stuff to do.
@@ -428,24 +433,24 @@ def assert_single_pop(iterable) -> Any | None:
     assert item and next(iterator, None) is None, 'Only one item expected'
     return item
 
-def get_operation(path_obj) -> Tuple[str, dict[str, Any]]:
+def validate_operation(method, operation_obj) -> Tuple[str, dict[str, Any]]:
     '''
     Dig out the one and only one operation method and object from the OpenAPI
     v3.1.0 path object.
     '''
-    open_api_3_1_0_operations = [
+    open_api_3_1_0_operations = set((
         'get', 'put', 'post', 'delete',
         'options', 'head', 'patch', 'trace'
-    ]
-    target_method = assert_single_pop(
-        (x for x in path_obj.keys() if x.lower() in open_api_3_1_0_operations)
-    )
+    ))
+    assert method in open_api_3_1_0_operations, f'bad operation method: {method}'
 
-    return str(target_method), path_obj[str(target_method).lower()]
+    # TODO: Check that the operation object is valid.
+
+    return method, operation_obj
 
 def get_main_response_content_entry(operation_obj):
     '''
-    Dig out the one and only one _response_ __media type__ and matching __schema
+    Dig out the one and only one _response_ __media type__ and matching __media type
     object__ from under the OpenAPI v3.1.0 operation object's content field.
 
     NOTE: 200 is the only assumed response code.
@@ -456,7 +461,7 @@ def get_main_response_content_entry(operation_obj):
     if media_type_and_object is None:
         return "", {}
     media_type, media_type_object = media_type_and_object
-    return media_type, media_type_object.get('schema', {})
+    return media_type, media_type_object
 
 def can_be_represented_as_wasm_primitive(schema) -> bool:
     '''
@@ -473,9 +478,11 @@ def get_file_schemas(media_type_obj):
     '''
 
     return (
-        (_path, schema) for _path, schema in
+        (path, schema) for path, schema in
                 media_type_obj.get('schema', {})
                 .get('properties', {})
                 .items()
-        if schema['type'] == 'string' and schema['contentMediaType'] in FILE_TYPES
+        if schema['type'] == 'string' \
+            and schema['format'] == 'binary' \
+            and media_type_obj['encoding'][path]['contentType'] in FILE_TYPES
     )

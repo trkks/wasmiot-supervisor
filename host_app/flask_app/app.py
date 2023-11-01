@@ -770,8 +770,10 @@ def fetch_modules(modules) -> list[ModuleConfig]:
         res_desc = requests.get(module["urls"]["description"], timeout=5)
         # Map the names of data files to their responses. The names are used to
         # save the files on disk for the module to use.
-        res_others = {name: requests.get(url, timeout=5)
-                      for name, url in module["urls"]["other"].items()}
+        res_others = {
+            name: requests.get(url, timeout=5)
+            for name, url in module["urls"]["other"].items()
+            } if module["urls"]["other"] else {}
 
         # Check that each request succeeded before continuing on.
         # Gather errors together.
