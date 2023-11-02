@@ -347,7 +347,6 @@ class Deployment:
 
         # Set up _all_ the files needed for this run, remapping expected mount
         # paths to temporary paths and then moving the contents between them.
-        print(module_config)
         for mount, _required in mounts:
             # Search for the actual filepath in filesystem first from request
             # (execution) and second from module config (deployment).
@@ -356,9 +355,12 @@ class Deployment:
                 module_config.data_files.get(mount.mount_path, None)
             ):
                 host_path = app_context_module_mount_path(module_name, mount.mount_path)
-                with open(host_path, "wb") as mountpath:
-                    with open(temp_path, "rb") as datapath:
-                        mountpath.write(datapath.read())
+                if host_path != temp_path:
+                    with open(host_path, "wb") as mountpath:
+                        with open(temp_path, "rb") as datapath:
+                            mountpath.write(datapath.read())
+                else:
+                    print(f'File already at mount location:', host_path)
             else:
                 print(f'Module expects mount "{mount.mount_path}", but it was not found in request or deployment.')
 
