@@ -202,13 +202,9 @@ def make_history(entry: RequestEntry):
 
 def wasm_worker():
     '''Constantly try dequeueing work for using WebAssembly modules'''
-    while True:
-        entry = wasm_queue.get()
+    while entry := wasm_queue.get():
         make_history(entry)
         wasm_queue.task_done()
-
-# Turn-on the worker thread.
-threading.Thread(target=wasm_worker, daemon=True).start()
 
 def create_app(*args, **kwargs) -> Flask:
     '''
@@ -291,7 +287,20 @@ def init_zeroconf(app: Flask):
     app.zeroconf = Zeroconf()
     app.zeroconf.register_service(service_info)
 
+    def teardown_worker():
+        """Signal the worker thread to stop and wait for it to finish."""
+        wasm_queue.put(None)
+        logger.debug("Waiting for the worker thread to finish...", end="")
+        wasm_worker_thread.join()
+        logger.debug("worker thread finished!")
+
+    # Turn-on the worker thread.
+    wasm_worker_thread = threading.Thread(target=wasm_worker, daemon=True)
+    wasm_worker_thread.start()
+
     atexit.register(teardown_zeroconf, app)
+    # Stop the worker thread before exiting.
+    atexit.register(teardown_worker)
 
 
 def teardown_zeroconf(app: Flask):
