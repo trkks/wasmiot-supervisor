@@ -289,7 +289,8 @@ class Deployment:
         :param app_context_module_mount_path: Function for getting the path to module's mount path based on Flask app's config.
         '''
         # Initialize the module.
-        module = self.runtime.get_or_load_module(self.modules[module_name])
+        module_config = self.modules[module_name]
+        module = self.runtime.get_or_load_module(module_config)
         if module is None:
             raise RuntimeError("Wasm module could not be loaded!")
 
@@ -344,19 +345,22 @@ class Deployment:
         if required_but_not_mounted:
             raise RuntimeError(f'required input files not found:  {required_but_not_mounted}')
 
-        # NOTE: Assuming the 'data files' have already at deployment time been
-        # saved at required paths.
-        # Set up the files given as input according to the paths specified in
-        # request remapping expected mount paths to temporary paths and then
-        # moving the contents between them.
+        # Set up _all_ the files needed for this run, remapping expected mount
+        # paths to temporary paths and then moving the contents between them.
+        print(module_config)
         for mount, _required in mounts:
-            if temp_path := request_filepaths.get(mount.mount_path, None):
+            # Search for the actual filepath in filesystem first from request
+            # (execution) and second from module config (deployment).
+            if temp_path := request_filepaths.get(
+                mount.mount_path,
+                module_config.data_files.get(mount.mount_path, None)
+            ):
                 host_path = app_context_module_mount_path(module_name, mount.mount_path)
                 with open(host_path, "wb") as mountpath:
                     with open(temp_path, "rb") as datapath:
                         mountpath.write(datapath.read())
             else:
-                print(f'Not mounting file: {mount.mount_path}')
+                print(f'Module expects mount "{mount.mount_path}", but it was not found in request or deployment.')
 
         return module, primitive_args
 

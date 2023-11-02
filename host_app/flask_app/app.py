@@ -803,7 +803,7 @@ def fetch_modules(modules) -> list[ModuleConfig]:
             filepath.write(res_bin.content)
 
         # Add other listed files related to the module.
-        data_files = []
+        data_files = {}
         for key, res_other in res_others.items():
             other_path = module_mount_path(module["name"], key)
 
@@ -811,7 +811,8 @@ def fetch_modules(modules) -> list[ModuleConfig]:
             with open(other_path, 'wb') as filepath:
                 filepath.write(res_other.content)
 
-            data_files.append(other_path)
+            # Map the mount name to whatever path the actual file is at.
+            data_files[key] = other_path
 
             # update the module configuration with the model path
             # TODO: Does having a "model path" attribute in the module

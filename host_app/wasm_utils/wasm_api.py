@@ -270,14 +270,14 @@ class ModuleConfig:
     name: str
     path: str
     description: Any = field(default_factory=dict)
-    data_files: List[Path] = field(default_factory=list)
+    data_files: Dict[str, Path] = field(default_factory=dict)
     ml_model: Optional[MLModel] = None
     data_ptr_function_name: str = "get_img_ptr"
 
-    def set_model_from_data_files(self, index: int = 0) -> None:
+    def set_model_from_data_files(self, key: str = "model.pb") -> None:
         """Sets the model using the indicated data file."""
-        if 0 <= index < len(self.data_files):
-            self.ml_model = MLModel(str(self.data_files[index]))
+        if key in self.data_files:
+            self.ml_model = MLModel(str(self.data_files[key]))
 
 
 @dataclass
