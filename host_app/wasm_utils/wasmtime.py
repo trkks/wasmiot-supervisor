@@ -11,7 +11,7 @@ from wasmtime import (
 
 from host_app.wasm_utils.general_utils import (
     python_clock_ms, python_delay, python_print_int, python_println, python_get_temperature,
-    python_get_humidity, Print, TakeImage, RpcCall
+    python_get_humidity, Print, TakeImageDynamicSize, TakeImageStaticSize, RpcCall
 )
 from host_app.wasm_utils.wasm_api import (
     WasmRuntime, WasmModule, ModuleConfig, IncompatibleWasmModule
@@ -167,8 +167,10 @@ class WasmtimeRuntime(WasmRuntime):
         self.linker.define_func(communication, "rpcCall", FuncType([i32, i32, i32, i32], []), rpc_call)
 
         # peripheral
-        take_image = TakeImage(self).function
-        self.linker.define_func(camera, "takeImage", FuncType([i32, i32], []), take_image)
+        take_image_dynamic_size = TakeImageDynamicSize(self).function
+        take_image_static_size = TakeImageStaticSize(self).function
+        self.linker.define_func(camera, "takeImageDynamicSize", FuncType([i32, i32], []), take_image_dynamic_size)
+        self.linker.define_func(camera, "takeImageStaticSize", FuncType([i32, i32], []), take_image_static_size)
         self.linker.define_func(dht, "getTemperature", FuncType([], [f32]), python_get_temperature)
         self.linker.define_func(dht, "getHumidity", FuncType([], [f32]), python_get_humidity)
 

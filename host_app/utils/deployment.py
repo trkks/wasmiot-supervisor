@@ -31,6 +31,7 @@ class MountStage(Enum):
     '''
     DEPLOYMENT = 'deployment'
     EXECUTION = 'execution'
+    OUTPUT = 'output'
 
 @dataclass(eq=True, frozen=True)
 class MountPathFile:
@@ -39,7 +40,9 @@ class MountPathFile:
     '''
     mount_path: str
     media_type: str
-    stage: MountStage
+    # HACK: This default stage is here because of the current implementation
+    # being clumsy to get module stage...
+    stage: MountStage = MountStage.EXECUTION
     encoding: str = 'base64'
     type: str = 'string'
 
@@ -59,10 +62,10 @@ class MountPathFile:
         assert schema['properties'], 'No properties defined for multipart schema'
 
         mounts = []
-        for path, schema in get_file_schemas(multipart):
+        for path, schema in get_supported_file_schemas(multipart):
             media_type = multipart['encoding'][path]['contentType']
             # NOTE: The other encoding field ('format') is not regarded here.
-            mount = cls(path, media_type, MountStage(schema['stage']))
+            mount = cls(path, media_type)
             mounts.append(mount)
 
         return mounts
@@ -165,13 +168,22 @@ class CallData:
         headers = {}
         files = {}
         if endpoint.request_media_obj:
-            if endpoint.request_media_obj[0] in FILE_TYPES:
-                # If the result media type is a file, it is sent as 'data' when
-                # the receiver reads 'files' from the request.
-                files = { 'data': open(data if data is not None else "", 'rb') }
-                # No headers; requests will add them automatically.
+            headers = { 'Content-Type': endpoint.request_media_obj[0] }
+            if endpoint.request_media_obj[0] == 'multipart/form-data':
+                execution_files = list(filter(
+                    lambda x: MountStage(x[1]['stage']) == MountStage.EXECUTION,
+                    get_supported_file_schemas(endpoint.request_media_obj[1])
+                ))
+                # Map the mount names to files created during previous Wasm
+                # call.
+                for path, _schema in execution_files:
+                    # NOTE: Only one file is expected in output.
+                    files[path] = data
             else:
                 headers['Content-Type'] = endpoint.request_media_obj[0]
+                with open(data, "rb") as datafile:
+                    files["data"] = datafile
+            # No headers; requests will add them automatically.
         return cls(target_url, headers, endpoint.method, files)
 
 
@@ -316,6 +328,13 @@ class Deployment:
                 mounts
             )
         ))
+        output_stage_mount_paths: Set[str] = set(map(
+            lambda x: x[0].mount_path,
+            filter(
+                lambda y: y[0].stage == MountStage.OUTPUT,
+                mounts
+            )
+        ))
 
         # Map all kinds of file parameters (optional or required) to expected
         # mount paths and actual files _once_.
@@ -340,8 +359,9 @@ class Deployment:
                 filter(lambda x: x[1], mounts)
             )
         )
-        # Check that required files have been correctly received.
-        required_but_not_mounted = required_mount_paths - received_filepaths
+        # Check that required files have been correctly received. Output paths
+        # are not expected in request at all.
+        required_but_not_mounted = required_mount_paths - received_filepaths - output_stage_mount_paths
         if required_but_not_mounted:
             raise RuntimeError(f'required input files not found:  {required_but_not_mounted}')
 
@@ -360,7 +380,7 @@ class Deployment:
                         with open(temp_path, "rb") as datapath:
                             mountpath.write(datapath.read())
                 else:
-                    print(f'File already at mount location:', host_path)
+                    print('File already at mount location:', host_path)
             else:
                 print(f'Module expects mount "{mount.mount_path}", but it was not found in request or deployment.')
 
@@ -426,7 +446,7 @@ class Deployment:
                 return json.dumps(func_result), None
             raise NotImplementedError('Non-primitive JSON from Wasm output not supported yet')
         if media_type == 'image/jpeg':
-            temp_img_path = Path('temp_image.jpg')
+            temp_img_path = Path(schema.keys()[0])
             return None, temp_img_path
         raise NotImplementedError(f'Unsupported response media type "{media_type}"')
 
@@ -477,7 +497,7 @@ def can_be_represented_as_wasm_primitive(schema) -> bool:
     type_ = schema.get('type', None)
     return type_ == 'integer' or type_ == 'float'
 
-def get_file_schemas(media_type_obj):
+def get_supported_file_schemas(media_type_obj):
     '''
     Return iterator of tuples of (path, schema) for all fields interpretable as
     files under multipart/form-data media type.

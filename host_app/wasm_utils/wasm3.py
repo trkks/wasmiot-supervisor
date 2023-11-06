@@ -7,7 +7,7 @@ import wasm3
 
 from host_app.wasm_utils.general_utils import (
     python_clock_ms, python_delay, python_print_int, python_println, python_get_temperature,
-    python_get_humidity, Print, TakeImage, RpcCall, RandomGet
+    python_get_humidity, Print, TakeImageDynamicSize, RpcCall, RandomGet
 )
 from host_app.wasm_utils.wasm_api import (
     WasmRuntime, WasmModule, ModuleConfig, WasmRuntimeNotSetError
@@ -183,7 +183,7 @@ class Wasm3Module(WasmModule):
         self._instance.link_function(communication, "rpcCall", "v(*iii)", rpc_call)
 
         # peripheral
-        self._instance.link_function(camera, "takeImage", "v(*i)", TakeImage(self.runtime).function)
+        self._instance.link_function(camera, "takeImage", "v(*i)", TakeImageDynamicSize(self.runtime).function)
         self._instance.link_function(dht, "getTemperature", "f()", python_get_temperature)
         self._instance.link_function(dht, "getHumidity", "f()", python_get_humidity)
 

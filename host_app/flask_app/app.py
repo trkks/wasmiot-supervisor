@@ -175,7 +175,9 @@ def do_wasm_work(entry: RequestEntry):
         return this_result
 
     headers = next_call.headers
-    files = next_call.files
+    # NOTE: IIUC this matches how 'requests' documentation instructs to do for
+    # multi-file uploads, so I'm guessing it closes the opened files once done.
+    files = { p: open(f, "rb") for p, f in next_call.files.items() }
 
     sub_response = getattr(requests, next_call.method)(
         next_call.url,
@@ -557,9 +559,9 @@ def run_module_function_raw_input(module_name, function_name):
 
     return jsonify({ 'result': result })
 
-@bp.route('/foo')
-def serve_test_jpg():
-    return send_file('../temp_image.jpg')
+@bp.route('/debug/<module_name>/<filename>')
+def serve_test_jpg(module_name: str, filename: str):
+    return send_file(module_mount_path(module_name, filename))
 
 @bp.route('/ml/<module_name>', methods=['POST'])
 def run_ml_module(module_name = None):
