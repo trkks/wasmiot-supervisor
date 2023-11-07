@@ -152,7 +152,6 @@ def do_wasm_work(entry: RequestEntry):
 
     print(f'Preparing Wasm module "{entry.module_name}"...')
     module, wasm_args = deployment.prepare_for_running(
-        module_mount_path,
         entry.module_name,
         entry.function_name,
         entry.request_args,
@@ -560,7 +559,8 @@ def run_module_function_raw_input(module_name, function_name):
     return jsonify({ 'result': result })
 
 @bp.route('/debug/<module_name>/<filename>')
-def serve_test_jpg(module_name: str, filename: str):
+def debug_serve_module_mount(module_name: str, filename: str):
+    """Respond with a file mounted to module for debugging purposes."""
     return send_file(module_mount_path(module_name, filename))
 
 @bp.route('/ml/<module_name>', methods=['POST'])
@@ -733,9 +733,11 @@ def deployment_create():
     wasm_runtime = WasmtimeRuntime([str(module_mount_path(m.name)) for m in module_configs])
 
     deployments[data["deploymentId"]] = Deployment(
-        wasm_runtime,
-        data["instructions"],
-        module_configs,
+        data["deploymentId"],
+        runtime=wasm_runtime,
+        _modules=module_configs,
+        endpoints=data["endpoints"],
+        _instructions=data["instructions"],
     )
 
     # If the fetching did not fail (that is, crash), return success.
@@ -778,13 +780,12 @@ def fetch_modules(modules) -> list[ModuleConfig]:
     for module in modules:
         # Make all the requests at once.
         res_bin = requests.get(module["urls"]["binary"], timeout=5)
-        res_desc = requests.get(module["urls"]["description"], timeout=5)
         # Map the names of data files to their responses. The names are used to
         # save the files on disk for the module to use.
         res_others = {
             name: requests.get(url, timeout=5)
-            for name, url in module["urls"]["other"].items()
-            } if module["urls"]["other"] else {}
+            for name, url in module.get("urls", {}).get("other", {}).items()
+        }
 
         # Check that each request succeeded before continuing on.
         # Gather errors together.
@@ -831,7 +832,6 @@ def fetch_modules(modules) -> list[ModuleConfig]:
             id=module["id"],
             name=module["name"],
             path=module_path,
-            description=res_desc.json(),
             data_files=data_files,
         )
         # combining options a) and b) from above:

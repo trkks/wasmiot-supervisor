@@ -1,6 +1,5 @@
 #from .app import create_app, teardown_zeroconf
 import os
-import threading
 
 # Have to setup environment variables before importing flask app
 os.environ.setdefault("FLASK_APP", "host_app")
