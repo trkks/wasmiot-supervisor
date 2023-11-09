@@ -90,6 +90,7 @@ The supervisor uses [semantic versioning](https://semver.org/). The version numb
 
 ```bash
 bump-my-version bump [major|minor|patch]
+git push origin v$(bump-my-version show current_version)
 ```
 
 This will update the version number in the files and create a git commit and tag for the new version.
