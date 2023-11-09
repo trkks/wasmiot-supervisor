@@ -31,7 +31,7 @@ class WasmtimeRuntime(WasmRuntime):
         self._wasi = WasiConfig()
         self._wasi.inherit_stdout()
         self._wasi.inherit_env()
-        # Open directories for the modules to access at their root(?)
+        # Open directories for the module to access at its root.
         for data_dir in data_dirs:
             guest_dir = "."
             print(f"Mounting {data_dir} to {guest_dir}")

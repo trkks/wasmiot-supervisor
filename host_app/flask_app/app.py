@@ -176,7 +176,7 @@ def do_wasm_work(entry: RequestEntry):
     headers = next_call.headers
     # NOTE: IIUC this matches how 'requests' documentation instructs to do for
     # multi-file uploads, so I'm guessing it closes the opened files once done.
-    files = { p: open(f, "rb") for p, f in next_call.files.items() }
+    files = { name: open(module_mount_path(module.name, name), "rb") for name in next_call.files }
 
     sub_response = getattr(requests, next_call.method)(
         next_call.url,
@@ -728,16 +728,22 @@ def deployment_create():
             errors=err.errors
         )
 
-    # Initialize the execution environment for this deployment, adding filepath
-    # roots for the modules' directories that they are able to use.
-    wasm_runtime = WasmtimeRuntime([str(module_mount_path(m.name)) for m in module_configs])
+    # Initialize __separate__ execution environments for each module for this
+    # deployment, adding filepath roots for the modules' directories that they
+    # are able to use. This way when file-access is granted via runtime, modules
+    # will only access their own directories.
+    modules_runtimes = {
+        m.name: WasmtimeRuntime([str(module_mount_path(m.name))])
+        for m in module_configs
+    }
 
     deployments[data["deploymentId"]] = Deployment(
         data["deploymentId"],
-        runtime=wasm_runtime,
+        runtimes=modules_runtimes,
         _modules=module_configs,
         endpoints=data["endpoints"],
         _instructions=data["instructions"],
+        _mounts=data["mounts"],
     )
 
     # If the fetching did not fail (that is, crash), return success.
@@ -790,7 +796,7 @@ def fetch_modules(modules) -> list[ModuleConfig]:
         # Check that each request succeeded before continuing on.
         # Gather errors together.
         errors = []
-        for res in itertools.chain([res_bin, res_desc], res_others.values()):
+        for res in itertools.chain([res_bin], res_others.values()):
             if not res.ok:
                 errors.append(res)
 
