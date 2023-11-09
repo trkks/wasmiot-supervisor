@@ -89,7 +89,7 @@ The supervisor's logs in your terminal should show that a `GET` request was rece
 The supervisor uses [semantic versioning](https://semver.org/). The version number is defined in `host_app/_version.py` and `pyproject.toml`. Do not change the version number manually, but use the following command to bump the version number:
 
 ```bash
-bump-my-version [major|minor|patch]
+bump-my-version bump [major|minor|patch]
 ```
 
 This will update the version number in the files and create a git commit and tag for the new version.

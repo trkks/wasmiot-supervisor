@@ -25,7 +25,7 @@ dependencies = {file = ["requirements.txt"]}
 version = {attr = "host_app.__version__"}
 
 [tool.bumpversion]
-current_version = "0.1.0"
+current_version = "0.1.1"
 commit = true
 tag = true
 
