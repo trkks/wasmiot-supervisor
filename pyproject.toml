@@ -12,15 +12,26 @@ dynamic = ["dependencies", "version"]
 [project.urls]
 repository = "https://github.com/LiquidAI-project/wasmiot-supervisor"
 
+[project.optional-dependencies]
+dev = [
+  "bump-my-version"
+]
+
 [tool.setuptools]
 packages = ["host_app"]
 
-[tool.setuptools_scm]
-write_to = "host_app/_version.py"
-
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+version = {attr = "host_app.__version__"}
+
+[tool.bumpversion]
+current_version = "0.1.1"
+commit = true
+tag = true
+
+[[tool.bumpversion.files]]
+filename = "host_app/_version.py"
 
 [build-system]
-requires = ["setuptools>=61", "setuptools_scm[toml]>=6.2"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"

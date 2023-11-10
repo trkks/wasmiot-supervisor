@@ -1,10 +1,28 @@
 # wasmiot-supervisor
-## Requirements
+
+Wasmiot supervisor is prototype implementation of self-adaptive supervisor for IoT devices. It is based on [WasmTime](https://wasmtime.dev/) and [Flask](https://flask.palletsprojects.com/).
+
+## Installation
+
+Supervisor can be installed either manually on device, or using Docker.
+
+### Docker
+
+Currently there is three (3) variations of images available:
+- **ghcr.io/liquidai-project/wasmiot-supervisor:latest** - Latest "stable" version of supervisor. This is the one that should have working feature-set. Version number is the same as the version of the supervisor, and follows [semantic versioning](https://semver.org/) (e.g. `v0.1.0`). Note that at this point no guarantees of backwards compatibility are made.
+- **ghcr.io/liquidai-project/wasmiot-supervisor:main** - Latest version of supervisor from `main` branch. This is the one that should be used for testing new features.
+- **ghcr.io/liquidai-project/wasmiot-supervisor:devcontainer** - Version of supervisor from `main` branch with VSCode devcontainer support. This is the default image used by VSCode devcontainer.
+
+When running the supervisor in Docker, the automatic discovery of devices is not supported by default docker network. To enable automatic discovery, you can use mdns reflector or create a [macvlan](https://docs.docker.com/network/macvlan/) network.
+
+### Manual installation
+
+#### Requirements
 - [Python3](https://www.python.org/downloads/)
 - Linux (for Windows users [WSL](https://learn.microsoft.com/en-us/windows/wsl/install))
   - `apt install gcc python3-dev` for installing `pywasm3`
 
-### raspberry pi
+##### raspberry pi
 
 For opencv support there are necessary requirements that need to be installed before installing the python libraries:
 ```
@@ -13,7 +31,7 @@ sudo apt install libwayland-cursor0 libxfixes3 libva2 libdav1d4 libavutil56 libx
 
 The requirements were taken from here: https://www.piwheels.org/project/opencv-contrib-python/ (python 3.9 and armv7l for raspberry pi 4)
 
-## Installation
+## Developing
 
 Clone the project:
 ```
@@ -66,7 +84,19 @@ curl http://localhost:5000/
 ```
 The supervisor's logs in your terminal should show that a `GET` request was received.
 
+### Versioning
+
+The supervisor uses [semantic versioning](https://semver.org/). The version number is defined in `host_app/_version.py` and `pyproject.toml`. Do not change the version number manually, but use the following command to bump the version number:
+
+```bash
+bump-my-version bump [major|minor|patch]
+git push origin v$(bump-my-version show current_version)
+```
+
+This will update the version number in the files and create a git commit and tag for the new version.
+
 ### Devcontainer
+
 Use VSCode for starting in container. NOTE: Be sure the network it uses is
 created i.e., before starting the container run:
 ```
@@ -393,4 +423,26 @@ To see all the results:
 
 ```bash
 curl http://localhost:5000/request-history
+```
+
+## Citation
+
+To cite this work, please use the following BibTeX entry:
+
+```bibtex
+@inproceedings{kotilainenProposingIsomorphicMicroservices2022,
+  title = {Proposing {{Isomorphic Microservices Based Architecture}} for {{Heterogeneous IoT Environments}}},
+  booktitle = {Product-{{Focused Software Process Improvement}}},
+  author = {Kotilainen, Pyry and Autto, Teemu and J{\"a}rvinen, Viljami and Das, Teerath and Tarkkanen, Juho},
+  editor = {Taibi, Davide and Kuhrmann, Marco and Mikkonen, Tommi and Kl{\"u}nder, Jil and Abrahamsson, Pekka},
+  year = {2022},
+  series = {Lecture {{Notes}} in {{Computer Science}}},
+  pages = {621--627},
+  publisher = {{Springer International Publishing}},
+  address = {{Cham}},
+  doi = {10.1007/978-3-031-21388-5_47},
+  abstract = {Recent advancements in IoT and web technologies have highlighted the significance of isomorphic software architecture development, which enables easier deployment of microservices in IoT-based systems. The key advantage of such systems is that the runtime or dynamic code migration between the components across the whole system becomes more flexible, increasing compatibility and improving resource allocation in networks. Despite the apparent advantages of such an approach, there are multiple issues and challenges to overcome before a truly valid solution can be built. In this idea paper, we propose an architecture for isomorphic microservice deployment on heterogeneous hardware assets, inspired by previous ideas introduced as liquid software [12]. The architecture consists of an orchestration server and a package manager, and various devices leveraging WebAssembly outside the browser to achieve a uniform computing environment. Our proposed architecture aligns with the long-term vision that, in the future, software deployment on heterogeneous devices can be simplified using WebAssembly.},
+  isbn = {978-3-031-21388-5},
+  langid = {english},
+}
 ```

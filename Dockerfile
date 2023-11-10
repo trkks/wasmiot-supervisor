@@ -45,4 +45,6 @@ ENV SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT}
 
 ENV PYTHONDONTWRITEBYTECODE 1
 
+RUN pip --disable-pip-version-check install -v -e .[dev]
+
 RUN su vscode -c "mkdir -p /home/vscode/.vscode-server/extensions"
