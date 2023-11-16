@@ -1,9 +1,10 @@
 """General interface for Wasm utilities."""
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeAlias
+
 
 ByteType: TypeAlias = bytes | bytearray
 
@@ -262,22 +263,31 @@ class WasmModule:
         """Link the remote functions to the Wasm module."""
         raise NotImplementedError
 
+ModuleDescription = dict[str, Any]
+"""
+Describes how a module exposes its functions as remote services. Based on
+OpenAPI.
+"""
 
 @dataclass
 class ModuleConfig:
-    """Dataclass for module name and file location."""
+    """
+    Dataclass for module name, file location and associated files referred to as
+    'mounts'. This is what a module instance for running functions is created
+    based on.
+    """
     id: str  # pylint: disable=invalid-name
     name: str
     path: str
-    description: Any = field(default_factory=dict)
-    data_files: List[Path] = field(default_factory=list)
+    data_files: dict[str, Path]
     ml_model: Optional[MLModel] = None
     data_ptr_function_name: str = "get_img_ptr"
 
-    def set_model_from_data_files(self, index: int = 0) -> None:
+    def set_model_from_data_files(self, key: str = "model.pb") -> None:
         """Sets the model using the indicated data file."""
-        if 0 <= index < len(self.data_files):
-            self.ml_model = MLModel(str(self.data_files[index]))
+        if key in self.data_files:
+            self.ml_model = MLModel(str(self.data_files[key]))
+
 
 
 @dataclass

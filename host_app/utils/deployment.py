@@ -1,128 +1,41 @@
 '''
-Utilities for intepreting application deployments based on (OpenAPI) descriptions
-of "things" (i.e., WebAssembly services/functions on devices) and executing
-their instructions.
+This module defines the Deployment and CallData classes.
+- Deployment interprets the instructions for how to link two WebAssembly functions together.
+- CallData contains the data needed for then actually calling a remote function's endpoint.
 '''
 
 from dataclasses import dataclass, field
-from enum import Enum
 from functools import reduce
+from itertools import chain
 import json
 from pathlib import Path
 from typing import Any, Dict, Tuple, Set
 
-from host_app.wasm_utils.wasm_api import WasmRuntime, WasmModule, ModuleConfig, WasmType
+from host_app.wasm_utils.wasm_api import ModuleConfig, WasmModule, WasmRuntime, WasmType
+from host_app.utils import FILE_TYPES
+from host_app.utils.endpoint import EndpointResponse, Endpoint, Schema, SchemaType
+from host_app.utils.mount import MountStage, MountPathFile
 
-
-FILE_TYPES = [
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "application/octet-stream"
-]
-"""
-Media types that are considered files in chaining requests and thus will be
-sent with whatever the sender (requests-library) decides.
-"""
-
-class MountStage(Enum):
-    '''
-    Defines the stage at which a file is mounted.
-    '''
-    DEPLOYMENT = 'deployment'
-    EXECUTION = 'execution'
-
-@dataclass(eq=True, frozen=True)
-class MountPathFile:
-    '''
-    Defines the schema used for files in "multipart/form-data" requests
-    '''
-    mount_path: str
-    media_type: str
-    stage: MountStage
-    encoding: str = 'base64'
-    type: str = 'string'
-
-    MediaTypeObject = dict[str, Any]
-
-    @classmethod
-    def list_from_multipart(cls, multipart: dict[str, Any]): # -> list[MountPathFile]:
-        '''
-        Extract list of files to mount when multipart/form-data is used to
-        describe a schema of multiple files.
-
-        Create a MountPathFiles from the JSON schema used in this project for
-        describing files and their paths.
-        '''
-        schema = multipart['schema']
-        assert schema['type'] == 'object', 'Only object schemas supported'
-        assert schema['properties'], 'No properties defined for multipart schema'
-
-        mounts = []
-        for path, schema in get_file_schemas(multipart):
-            media_type = multipart['encoding'][path]['contentType']
-            # NOTE: The other encoding field ('format') is not regarded here.
-            mount = cls(path, media_type, MountStage(schema['stage']))
-            mounts.append(mount)
-
-        return mounts
 
 EndpointArgs = str | list[str] | dict[str, Any] | None
-EndpointData = str | bytes | Path | None
+EndpointData = list[str] | None
+"""List of mount names that the module defines as outputs of a ran function"""
 EndpointOutput = Tuple[EndpointArgs, EndpointData]
 
 @dataclass
-class Endpoint:
-    '''Describing an endpoint for a RPC-call'''
-    url: str
-    method: str
-    parameters: list[dict[str, str | bool]]
-    response_media_obj: Tuple[str, dict[str, Any] | None]
-    request_media_obj: Tuple[str, dict[str, Any] | None] | None = None
-
-    @classmethod
-    def from_openapi(cls, description: dict[str, Any]):
-        '''
-        Create an Endpoint object from an endpoint's (partly OpenAPI v3.1.0 path
-        item object) description.
-        '''
-        path = description['path']
-        target_method, operation_obj = validate_operation(
-            description['operation']['method'], description['operation']['body']
-        )
-        response_media = get_main_response_content_entry(operation_obj)
-
-        # Select specific media type based on the possible _input_ to this
-        # endpoint (e.g., if this endpoint can receive a JPEG-image).
-        request_media = None
-        if (rbody := operation_obj.get('requestBody', None)):
-            # NOTE: The first media type is selected.
-            request_media = assert_single_pop(rbody['content'].items())
-
-        url = description['url'].rstrip('/') + path
-
-        return cls(
-            url,
-            target_method,
-            operation_obj['parameters'],
-            (response_media[0], response_media[1].get('schema', None)),
-            request_media
-        )
-
-@dataclass
 class CallData:
-    '''Minimal stuff needed for calling an endpoint'''
+    '''Endpoint with matching arguments and other request data (files)'''
     url: str
     headers: dict[str, str]
     method: str
-    files: dict[str, Any]
+    files: list[str] | None
 
     @classmethod
     def from_endpoint(
         cls,
         endpoint: Endpoint,
         args: EndpointArgs = None,
-        data: EndpointData = None
+        files: EndpointData = None
     ):
         '''
         Fill in the parameters and input for an endpoint with arguments and
@@ -130,7 +43,7 @@ class CallData:
         '''
 
         # TODO: Fill in URL path.
-        target_url = endpoint.url.rstrip('/')
+        target_url = endpoint.url.rstrip('/') + endpoint.path
 
         # Fill in URL query.
         if args:
@@ -140,14 +53,14 @@ class CallData:
                 # NOTE: Only one parameter is supported for now (WebAssembly currently
                 # does not seem to support tuple outputs (easily)). Also path should
                 # have been already filled and provided in the deployment phase.
-                param_name = endpoint.parameters[0]["name"]
+                param_name = endpoint.request.parameters[0]["name"]
                 param_value = args
                 query = f'?{param_name}={param_value}'
             elif isinstance(args, list):
                 # Build the query in order.
                 query = reduce(
                     lambda acc, x: f'{acc}&{x[0]}={x[1]}',
-                    zip(map(lambda y: y["name"], endpoint.parameters), args),
+                    zip(map(lambda y: y["name"], endpoint.request.parameters), args),
                     '?'
                 )
             elif isinstance(args, dict):
@@ -163,115 +76,175 @@ class CallData:
             target_url += query
 
         headers = {}
-        files = {}
-        if endpoint.request_media_obj:
-            if endpoint.request_media_obj[0] in FILE_TYPES:
-                # If the result media type is a file, it is sent as 'data' when
-                # the receiver reads 'files' from the request.
-                files = { 'data': open(data if data is not None else "", 'rb') }
-                # No headers; requests will add them automatically.
-            else:
-                headers['Content-Type'] = endpoint.request_media_obj[0]
-        return cls(target_url, headers, endpoint.method, files)
 
+        return cls(target_url, headers, endpoint.method, files or {})
+
+@dataclass
+class FunctionLink:
+    '''Contains how functions should be mapped between modules.'''
+    from_: Endpoint | dict[str, Any]
+    to: Endpoint | dict[str, Any] | None #pylint: disable=invalid-name
+
+    def __post_init__(self):
+        """Initialize the other dataclass fields"""
+        if isinstance(self.from_, dict):
+            self.from_ = Endpoint(**self.from_)
+        if isinstance(self.to, dict):
+            self.to = Endpoint(**self.to)
+
+FunctionEndpointMap = dict[str, Endpoint]
+ModuleEndpointMap = dict[str, dict[FunctionEndpointMap]]
+"""
+Mapping of module names to functions and their endpoints. NOTE: This means that
+a deployment can not have two modules with the same name.
+"""
+
+FunctionLinkMap = dict[str, FunctionLink]
+ModuleLinkMap = dict[str, dict[FunctionLinkMap]]
+
+MountPathMap = dict[str, MountPathFile]
+MountStageMap = dict[MountStage, list[MountPathMap]]
+FunctionMountMap = dict[str, MountStageMap]
+ModuleMountMap = dict[str, FunctionMountMap]
 
 @dataclass
 class Deployment:
-    '''Describing a sequence of instructions to be executed in (some) order.'''
-    runtime: WasmRuntime
-    instructions: dict[str, dict[str, dict[str, dict[str, Any]]]]
+    '''
+    Describes how (HTTP) endpoints map to environment, parameters and execution of
+    WebAssembly functions and vice versa.
+    '''
+    id: str # pylint: disable=invalid-name
+    runtimes: dict[str, WasmRuntime]
     _modules: list[ModuleConfig]
+    endpoints: ModuleEndpointMap
+    _instructions: dict[str, Any]
+    _mounts: dict[str, Any]
     modules: dict[str, ModuleConfig] = field(init=False)
-    #main_module: WasmModule
-    '''
-    TODO: This module could in the future contain the main execution logic or
-    "script" for the _whole_ application composed of modules and distributed
-    between devices.
-    '''
+    instructions: ModuleLinkMap = field(init=False)
+    mounts: ModuleMountMap = field(init=False)
 
     def __post_init__(self):
+        # Map the modules by their names for easier access.
         self.modules = { m.name: m for m in self._modules }
+
+        # Make the received whatever data into objects at runtime because of
+        # dynamic typing. NOTE/FIXME: This is mutating the collection while
+        # iterating it which might be bad...
+        # Endpoints:
+        for module_name, functions in self.endpoints.items():
+            for function_name, endpoint in functions.items():
+                self.endpoints[module_name][function_name] = Endpoint(**endpoint)
+        # Mounts:
+        self.mounts = {}
+        for module_name, functions in self._mounts.items():
+            self.mounts[module_name] = {}
+            for function_name, stage_mounts in functions.items():
+                self.mounts[module_name][function_name] = {}
+                for stage, mounts in stage_mounts.items():
+                    # NOTE: There might be duplicate paths in the mounts.
+                    self.mounts[module_name][function_name][MountStage(stage)] = \
+                        [MountPathFile(**mount) for mount in mounts]
+
+        # Build how function calls are chained or linked to each other across
+        # endpoints and other devices.
+        self.instructions = {}
+        # NOTE: This is what current implementation sends as instructions which
+        # might change to not have the 'modules' key at all.
+        for module_name, functions in self._instructions['modules'].items():
+            self.instructions[module_name] = {}
+            for function_name, link in functions.items():
+                # NOTE: The from-keyword prevents using the double splat
+                # operator for key-value initialization of this class.
+                self.instructions[module_name][function_name] = \
+                    FunctionLink(from_=link["from"], to=link["to"])
 
     def _next_target(self, module_name, function_name) -> Endpoint | None:
         '''
         Return the target where the module's function's output is to be sent next.
         '''
 
-        if (next_endpoint := self.instructions['modules'][module_name][function_name]['to']):
-            # TODO: Check if the endpoint is on this device already or not to
-            # prevent unnecessary network requests.
-            # endpoint_description = self.instructions['endpoints'][next_endpoint.function_name]
-            endpoint_description = next_endpoint
-            return Endpoint.from_openapi(endpoint_description)
+        # TODO: Check if the endpoint is on this device already or not to
+        # prevent unnecessary network requests.
+        return self.instructions[module_name][function_name].to
 
-        return None
+    def _connect_request_files_to_mounts(
+        self,
+        module_name,
+        function_name,
+        request_filepaths: dict[str, Path]
+    ) -> None:
+        """
+        Check the validity of file mounts received in request. Set _all_ mounts
+        up for the module to use for this function.
 
-    def mounts_for(self, module: WasmModule, function_name: str) -> list[(MountPathFile, bool)]:
-        '''
-        Get the list of files to be mounted for the module's function and
-        whether they are mandatory or not
-        '''
-        # Get the OpenAPI description for interpreting file mounts.
-        operation = self.instructions['modules'][module.name][function_name]['from']['operation']['body']
+        The setup is needed, because received files in requests are saved into
+        some arbitrary filesystem locations, where they need to be moved from
+        for the Wasm module to access.
+        """
+        mounts: MountStageMap = self.mounts[module_name][function_name]
+        deployment_stage_mount_paths = mounts[MountStage.DEPLOYMENT]
+        execution_stage_mount_paths = mounts[MountStage.EXECUTION]
 
-        # TODO: When the component model is to be integrated, map arguments in
-        # request to the interface described in .wit.
+        # Map all kinds of file parameters (optional or required) to expected
+        # mount paths and actual files _once_.
+        # NOTE: Assuming the deployment filepaths have been handled already.
+        received_filepaths: Set[str] = set(map(lambda x: x.path, deployment_stage_mount_paths))
+        for request_mount_path, temp_source_path in request_filepaths.items():
+            # Check that the file is expected.
+            if request_mount_path not in map(lambda x: x.path, execution_stage_mount_paths):
+                raise RuntimeError(f'Unexpected input file "{request_mount_path}"')
 
-        top_level_content = operation.get('requestBody', {}).get('content', {})
-        request_body_paths = (
-            MountPathFile.list_from_multipart(
-                top_level_content['multipart/form-data']
+            # Check that the file is not already mapped. NOTE: This prevents
+            # overwriting deployment stage files.
+            if request_mount_path not in received_filepaths:
+                received_filepaths.add(request_mount_path)
+            else:
+                raise RuntimeError(f'Input file "{temp_source_path}" already mapped to "{request_mount_path}"')
+
+        # Get the paths of _required_ files.
+        required_input_mount_paths: Set[str] = set(map(
+            lambda y: y.path,
+            filter(
+                lambda x: x.required,
+                chain(deployment_stage_mount_paths, execution_stage_mount_paths)
             )
-            if 'multipart/form-data' in top_level_content
-            # Only multipart/form-data is supported for file mounts.
-            else []
-        )
-
-        # Check that all the expected media types are supported.
-        # TODO: Could be done at deployment time.
-        found_unsupported_medias = list(filter(
-            lambda x: x.media_type not in FILE_TYPES, request_body_paths
-        ))
-        if found_unsupported_medias:
-            raise NotImplementedError(f'Input file types not supported: "{found_unsupported_medias}"')
-
-        # Get a list of expected file parameters. The 'name' is actually
-        # interpreted as a path relative to module root.
-        param_files = [
-            (
-                MountPathFile(
-                    str(parameter['name']), 'application/octet-stream', MountStage.EXECUTION
-                ),
-                bool(parameter.get('required', False))
-            )
-            for parameter in operation.get('parameters', [])
-            if parameter.get('in', None) == 'requestBody'
-                and parameter.get('name', '') != ''
-        ]
-
-        # All 'pathed' files are required by default.
-        request_body_paths = list(map(
-            lambda x: (x, True),
-            request_body_paths
         ))
 
-        # Lastly if the _response_ contains files, the matching filepaths need
-        # to be made available for the module to write as well.
-        response_media_type, response_media_obj = get_main_response_content_entry(operation)
-        response_files = (
-            MountPathFile.list_from_multipart(
-                response_media_obj
-            )
-            if 'multipart/form-data' == response_media_type
-            # Only multipart/form-data is supported for file mounts.
-            else []
-        )
+        # Check that required files have been correctly received. Output paths
+        # are not expected in request at all.
+        required_but_not_mounted = required_input_mount_paths - received_filepaths
+        if required_but_not_mounted:
+            raise RuntimeError(f'required input files not found:  {required_but_not_mounted}')
 
-        return param_files + request_body_paths + response_files
+        # Set up _all_ the files needed for this run, remapping expected mount
+        # paths to temporary paths and then moving the contents between them.
+        all_mounts = chain(execution_stage_mount_paths, deployment_stage_mount_paths, mounts[MountStage.OUTPUT])
+        for mount in all_mounts:
+            temp_source_path = None
+            match mount.stage:
+                case MountStage.DEPLOYMENT:
+                    temp_source_path = self.modules[module_name].data_files.get(mount.path, None)
+                case MountStage.EXECUTION:
+                    temp_source_path = request_filepaths.get(mount.path, None)
+                case MountStage.OUTPUT:
+                    continue
+
+            if not temp_source_path:
+                print(f'Module expects mount "{mount.path}", but it was not found in request or deployment.')
+                raise RuntimeError(f'Missing input file "{mount.path}"')
+
+            # FIXME: Importing here to avoid circular imports.
+            from host_app.flask_app.app import module_mount_path
+            host_path = module_mount_path(module_name, mount.path)
+            if host_path != temp_source_path:
+                with open(host_path, "wb") as mountpath:
+                    with open(temp_source_path, "rb") as datapath:
+                        mountpath.write(datapath.read())
+            else:
+                print('File already at mount location:', host_path)
 
     def prepare_for_running(
         self,
-        app_context_module_mount_path,
         module_name,
         function_name,
         args: dict,
@@ -286,10 +259,12 @@ class Deployment:
             1. The instantiated module.
             2. Ordered arguments for the function.
 
-        :param app_context_module_mount_path: Function for getting the path to module's mount path based on Flask app's config.
+        :param app_context_module_mount_path: Function for getting the path to
+        module's mount path based on Flask app's config.
         '''
         # Initialize the module.
-        module = self.runtime.get_or_load_module(self.modules[module_name])
+        module_config = self.modules[module_name]
+        module = self.runtimes[module_name].get_or_load_module(module_config)
         if module is None:
             raise RuntimeError("Wasm module could not be loaded!")
 
@@ -300,63 +275,7 @@ class Deployment:
 
         # Get the mounts described for this module for checking requirementes
         # and mapping to actual received files in this request.
-        mounts = self.mounts_for(module, function_name)
-        execution_stage_mount_paths: Set[str] = set(map(
-            lambda x: x[0].mount_path,
-            filter(
-                lambda y: y[0].stage == MountStage.EXECUTION,
-                mounts
-            )
-        ))
-        deployment_stage_mount_paths: Set[str] = set(map(
-            lambda x: x[0].mount_path,
-            filter(
-                lambda y: y[0].stage == MountStage.DEPLOYMENT,
-                mounts
-            )
-        ))
-
-        # Map all kinds of file parameters (optional or required) to expected
-        # mount paths and actual files _once_.
-        # NOTE: Assuming the deployment filepaths have been handled already.
-        received_filepaths: Set[str] = deployment_stage_mount_paths
-        for request_mount_path, temp_path in request_filepaths.items():
-            # Check that the file is expected.
-            if request_mount_path not in execution_stage_mount_paths:
-                raise RuntimeError(f'Unexpected input file "{request_mount_path}"')
-
-            # Check that the file is not already mapped. NOTE: This prevents
-            # overwriting deployment stage files.
-            if request_mount_path not in received_filepaths:
-                received_filepaths.add(request_mount_path)
-            else:
-                raise RuntimeError(f'Input file "{temp_path}" already mapped to "{request_mount_path}"')
-
-        # Get the paths of _required_ files.
-        required_mount_paths: Set[str] = set(
-            map(
-                lambda y: y[0].mount_path,
-                filter(lambda x: x[1], mounts)
-            )
-        )
-        # Check that required files have been correctly received.
-        required_but_not_mounted = required_mount_paths - received_filepaths
-        if required_but_not_mounted:
-            raise RuntimeError(f'required input files not found:  {required_but_not_mounted}')
-
-        # NOTE: Assuming the 'data files' have already at deployment time been
-        # saved at required paths.
-        # Set up the files given as input according to the paths specified in
-        # request remapping expected mount paths to temporary paths and then
-        # moving the contents between them.
-        for mount, _required in mounts:
-            if temp_path := request_filepaths.get(mount.mount_path, None):
-                host_path = app_context_module_mount_path(module_name, mount.mount_path)
-                with open(host_path, "wb") as mountpath:
-                    with open(temp_path, "rb") as datapath:
-                        mountpath.write(datapath.read())
-            else:
-                print(f'Not mounting file: {mount.mount_path}')
+        self._connect_request_files_to_mounts(module.name, function_name, request_filepaths)
 
         return module, primitive_args
 
@@ -379,27 +298,26 @@ class Deployment:
 
         # NOTE: Assuming the actual method used was the one described in
         # deployment.
-        operation_obj = self.instructions['modules'][module_name][function_name]['from']['operation']['body']
-        response_media = get_main_response_content_entry(operation_obj)
-
-        source_endpoint_result = self.parse_endpoint_result(
-            wasm_output, response_media[0], response_media[1].get('schema', {})
+        next_exec_args, next_exec_files = self.parse_endpoint_result(
+            wasm_output,
+            self.endpoints[module_name][function_name].response,
+            self.mounts[module_name][function_name][MountStage.OUTPUT]
         )
 
         # Check if there still is stuff to do.
         if (next_endpoint := self._next_target(module_name, function_name)):
             next_call = CallData.from_endpoint(
-                next_endpoint, *source_endpoint_result
+                next_endpoint, next_exec_args, next_exec_files
             )
-            return source_endpoint_result, next_call
+            return (next_exec_args, next_exec_files), next_call
 
-        return source_endpoint_result, None
+        return (next_exec_args, next_exec_files), None
 
     def parse_endpoint_result(
             self,
-            func_result,
-            media_type,
-            schema
+            wasm_output,
+            response_endpoint: EndpointResponse,
+            output_mounts: dict[str, MountPathFile]
         ) -> EndpointOutput:
         '''
         Based on media type (and schema if a structure like JSON), transform given
@@ -415,74 +333,22 @@ class Deployment:
         filepath in the form of `Path` is returned.
         .
         '''
-        if media_type == 'application/json':
-            if can_be_represented_as_wasm_primitive(schema):
-                return json.dumps(func_result), None
+
+        if response_endpoint.media_type == 'application/json':
+            if can_be_represented_as_wasm_primitive(response_endpoint.schema):
+                return json.dumps(wasm_output), None
             raise NotImplementedError('Non-primitive JSON from Wasm output not supported yet')
-        if media_type == 'image/jpeg':
-            temp_img_path = Path('temp_image.jpg')
-            return None, temp_img_path
-        raise NotImplementedError(f'Unsupported response media type "{media_type}"')
+        if response_endpoint.media_type in FILE_TYPES:
+            # The result is expected to be found in a file mounted to the module.
+            assert len(output_mounts) == 1, \
+                f'One and only one output file expected for media type "{response_endpoint.media_type}"'
+            out_img_name = output_mounts[0].path
+            return None, [out_img_name]
+        raise NotImplementedError(f'Unsupported response media type "{response_endpoint.media_type}"')
 
-def assert_single_pop(iterable) -> Any | None:
-    '''
-    Assert that the iterator has only one item and return it.
-    '''
-    iterator = iter(iterable)
-    item = next(iter(iterator), None)
-    assert item and next(iterator, None) is None, 'Only one item expected'
-    return item
-
-def validate_operation(method, operation_obj) -> Tuple[str, dict[str, Any]]:
-    '''
-    Dig out the one and only one operation method and object from the OpenAPI
-    v3.1.0 path object.
-    '''
-    open_api_3_1_0_operations = set((
-        'get', 'put', 'post', 'delete',
-        'options', 'head', 'patch', 'trace'
-    ))
-    assert method in open_api_3_1_0_operations, f'bad operation method: {method}'
-
-    # TODO: Check that the operation object is valid.
-
-    return method, operation_obj
-
-def get_main_response_content_entry(operation_obj):
-    '''
-    Dig out the one and only one _response_ __media type__ and matching __media type
-    object__ from under the OpenAPI v3.1.0 operation object's content field.
-
-    NOTE: 200 is the only assumed response code.
-    '''
-    media_type_and_object = assert_single_pop(
-        operation_obj['responses']['200']['content'].items()
-    )
-    if media_type_and_object is None:
-        return "", {}
-    media_type, media_type_object = media_type_and_object
-    return media_type, media_type_object
-
-def can_be_represented_as_wasm_primitive(schema) -> bool:
+def can_be_represented_as_wasm_primitive(schema: Schema) -> bool:
     '''
     Return True if the OpenAPI schema object can be represented as a WebAssembly
     primitive.
     '''
-    type_ = schema.get('type', None)
-    return type_ == 'integer' or type_ == 'float'
-
-def get_file_schemas(media_type_obj):
-    '''
-    Return iterator of tuples of (path, schema) for all fields interpretable as
-    files under multipart/form-data media type.
-    '''
-
-    return (
-        (path, schema) for path, schema in
-                media_type_obj.get('schema', {})
-                .get('properties', {})
-                .items()
-        if schema['type'] == 'string' \
-            and schema['format'] == 'binary' \
-            and media_type_obj['encoding'][path]['contentType'] in FILE_TYPES
-    )
+    return schema.type in (SchemaType.INTEGER, )

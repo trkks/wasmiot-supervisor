@@ -98,8 +98,7 @@ class Print(RemoteFunction):
 
         return python_print
 
-
-class TakeImage(RemoteFunction):
+class TakeImageDynamicSize(RemoteFunction):
     """Remote function generator for capturing image with attached camera."""
 
     def alloc(self, nbytes: int):
@@ -108,7 +107,7 @@ class TakeImage(RemoteFunction):
 
     @property
     def function(self) -> Callable[[int, int], None]:
-        def python_take_image(out_ptr_ptr: int, out_size_ptr: int):
+        def python_take_image_dynamic_size(out_ptr_ptr: int, out_size_ptr: int):
             """
             Take an image and write it to memory at the given runtime using the given module.
 
@@ -137,7 +136,52 @@ class TakeImage(RemoteFunction):
             self.runtime.write_to_memory(out_ptr_ptr, pointer_bytes, self.runtime.current_module_name)
             self.runtime.write_to_memory(out_size_ptr, length_bytes, self.runtime.current_module_name)
 
-        return python_take_image
+        return python_take_image_dynamic_size
+
+
+class TakeImageStaticSize(RemoteFunction):
+    """
+    Remote function generator for capturing image and scaling it according to
+    given constraints with attached camera.
+    """
+
+    @property
+    def function(self) -> Callable[[int, int], None]:
+        def python_take_image_static_size(out_ptr: int, size_ptr: int):
+            """
+            Take an image, scale it to given byte length and write it to memory
+            at the given runtime using the given module.
+
+            Read the size of the image from size_ptr (32bit LSB) and store the
+            image in out_ptr.
+            """
+            cam = cv2.VideoCapture(0)  # type: ignore
+            _, img = cam.read()
+            cam.release()
+
+            try:
+                _, datatmp = cv2.imencode(".jpg", img)
+                data = datatmp.tobytes()
+            except cv2.error as error:
+                temp_path = './fakeWebcam.jpg'
+                print(f"Error reading image (assuming non-Linux system; using file from '{temp_path}' ): ", error)
+                with open(temp_path, "rb") as f:
+                    data = f.read()
+
+            # Read the required size from memory.
+            out_len_bytes, fail = self.runtime.read_from_memory(size_ptr, 4, self.runtime.current_module_name)
+            if fail:
+                print("Error reading image length: ", fail)
+                raise MemoryError(f"Unable to read 4 bytes at location {size_ptr} from memory!")
+            out_len = struct.unpack("<I", out_len_bytes)[0]
+
+            # Fit the image data to expected size.
+            data = data[:out_len]
+
+            # Write the image to memory.
+            self.runtime.write_to_memory(out_ptr, data, self.runtime.current_module_name)
+
+        return python_take_image_static_size
 
 class RpcCall(RemoteFunction):
     """Remote function generator for RPC calls."""

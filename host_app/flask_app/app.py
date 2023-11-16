@@ -152,7 +152,6 @@ def do_wasm_work(entry: RequestEntry):
 
     print(f'Preparing Wasm module "{entry.module_name}"...')
     module, wasm_args = deployment.prepare_for_running(
-        module_mount_path,
         entry.module_name,
         entry.function_name,
         entry.request_args,
@@ -175,7 +174,9 @@ def do_wasm_work(entry: RequestEntry):
         return this_result
 
     headers = next_call.headers
-    files = next_call.files
+    # NOTE: IIUC this matches how 'requests' documentation instructs to do for
+    # multi-file uploads, so I'm guessing it closes the opened files once done.
+    files = { name: open(module_mount_path(module.name, name), "rb") for name in next_call.files }
 
     sub_response = getattr(requests, next_call.method)(
         next_call.url,
@@ -202,13 +203,9 @@ def make_history(entry: RequestEntry):
 
 def wasm_worker():
     '''Constantly try dequeueing work for using WebAssembly modules'''
-    while True:
-        entry = wasm_queue.get()
+    while entry := wasm_queue.get():
         make_history(entry)
         wasm_queue.task_done()
-
-# Turn-on the worker thread.
-threading.Thread(target=wasm_worker, daemon=True).start()
 
 def create_app(*args, **kwargs) -> Flask:
     '''
@@ -291,7 +288,20 @@ def init_zeroconf(app: Flask):
     app.zeroconf = Zeroconf()
     app.zeroconf.register_service(service_info)
 
+    def teardown_worker():
+        """Signal the worker thread to stop and wait for it to finish."""
+        wasm_queue.put(None)
+        logger.debug("Waiting for the worker thread to finish...", end="")
+        wasm_worker_thread.join()
+        logger.debug("worker thread finished!")
+
+    # Turn-on the worker thread.
+    wasm_worker_thread = threading.Thread(target=wasm_worker, daemon=True)
+    wasm_worker_thread.start()
+
     atexit.register(teardown_zeroconf, app)
+    # Stop the worker thread before exiting.
+    atexit.register(teardown_worker)
 
 
 def teardown_zeroconf(app: Flask):
@@ -548,9 +558,10 @@ def run_module_function_raw_input(module_name, function_name):
 
     return jsonify({ 'result': result })
 
-@bp.route('/foo')
-def serve_test_jpg():
-    return send_file('../temp_image.jpg')
+@bp.route('/debug/<module_name>/<filename>')
+def debug_serve_module_mount(module_name: str, filename: str):
+    """Respond with a file mounted to module for debugging purposes."""
+    return send_file(module_mount_path(module_name, filename))
 
 @bp.route('/ml/<module_name>', methods=['POST'])
 def run_ml_module(module_name = None):
@@ -717,14 +728,22 @@ def deployment_create():
             errors=err.errors
         )
 
-    # Initialize the execution environment for this deployment, adding filepath
-    # roots for the modules' directories that they are able to use.
-    wasm_runtime = WasmtimeRuntime([str(module_mount_path(m.name)) for m in module_configs])
+    # Initialize __separate__ execution environments for each module for this
+    # deployment, adding filepath roots for the modules' directories that they
+    # are able to use. This way when file-access is granted via runtime, modules
+    # will only access their own directories.
+    modules_runtimes = {
+        m.name: WasmtimeRuntime([str(module_mount_path(m.name))])
+        for m in module_configs
+    }
 
     deployments[data["deploymentId"]] = Deployment(
-        wasm_runtime,
-        data["instructions"],
-        module_configs,
+        data["deploymentId"],
+        runtimes=modules_runtimes,
+        _modules=module_configs,
+        endpoints=data["endpoints"],
+        _instructions=data["instructions"],
+        _mounts=data["mounts"],
     )
 
     # If the fetching did not fail (that is, crash), return success.
@@ -767,18 +786,17 @@ def fetch_modules(modules) -> list[ModuleConfig]:
     for module in modules:
         # Make all the requests at once.
         res_bin = requests.get(module["urls"]["binary"], timeout=5)
-        res_desc = requests.get(module["urls"]["description"], timeout=5)
         # Map the names of data files to their responses. The names are used to
         # save the files on disk for the module to use.
         res_others = {
             name: requests.get(url, timeout=5)
-            for name, url in module["urls"]["other"].items()
-            } if module["urls"]["other"] else {}
+            for name, url in module.get("urls", {}).get("other", {}).items()
+        }
 
         # Check that each request succeeded before continuing on.
         # Gather errors together.
         errors = []
-        for res in itertools.chain([res_bin, res_desc], res_others.values()):
+        for res in itertools.chain([res_bin], res_others.values()):
             if not res.ok:
                 errors.append(res)
 
@@ -794,7 +812,7 @@ def fetch_modules(modules) -> list[ModuleConfig]:
             filepath.write(res_bin.content)
 
         # Add other listed files related to the module.
-        data_files = []
+        data_files = {}
         for key, res_other in res_others.items():
             other_path = module_mount_path(module["name"], key)
 
@@ -802,7 +820,8 @@ def fetch_modules(modules) -> list[ModuleConfig]:
             with open(other_path, 'wb') as filepath:
                 filepath.write(res_other.content)
 
-            data_files.append(other_path)
+            # Map the mount name to whatever path the actual file is at.
+            data_files[key] = other_path
 
             # update the module configuration with the model path
             # TODO: Does having a "model path" attribute in the module
@@ -819,7 +838,6 @@ def fetch_modules(modules) -> list[ModuleConfig]:
             id=module["id"],
             name=module["name"],
             path=module_path,
-            description=res_desc.json(),
             data_files=data_files,
         )
         # combining options a) and b) from above:
