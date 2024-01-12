@@ -13,6 +13,7 @@ from host_app.flask_app import app as flask_app
 if __name__ == "__main__":
     print("Starting program")
 
+    debug = bool(os.environ.get("FLASK_DEBUG", 0))
 
     #print('starting modules')
     #wasm_daemon = threading.Thread(name='wasm_daemon',
@@ -23,5 +24,5 @@ if __name__ == "__main__":
 
     app = flask_app.create_app(instance_path=INSTANCE_PATH)
 
-    app.run(debug=True, host="0.0.0.0")
+    app.run(debug=debug, host="0.0.0.0", use_reloader=False)
 

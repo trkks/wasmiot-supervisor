@@ -13,14 +13,11 @@ from pathlib import Path
 import queue
 import string
 import struct
-import sys
 import threading
-import traceback
 from typing import Any, Dict, Generator, Tuple
 
 import atexit
 from flask import Flask, Blueprint, jsonify, current_app, request, send_file
-from flask.helpers import get_debug_flag
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
 from werkzeug.utils import secure_filename
@@ -30,8 +27,6 @@ from zeroconf import ServiceInfo, Zeroconf
 
 import cv2
 import numpy as np
-import sentry_sdk
-from sentry_sdk.integrations.flask import FlaskIntegration
 
 from host_app.wasm_utils.wasm import wasm_modules
 from host_app.wasm_utils.wasm_api import MLModel, ModuleConfig
@@ -67,10 +62,11 @@ class FetchFailures(Exception):
     """Raised when fetching modules or their attached files fails"""
     errors: list[requests.Response]
 
+FLASK_APP = os.environ.get("FLASK_APP", __name__)
 
 bp = Blueprint(os.environ["FLASK_APP"], os.environ["FLASK_APP"])
 
-logger = logging.getLogger(os.environ["FLASK_APP"])
+logger = logging.getLogger(FLASK_APP)
 
 deployments = {}
 """
@@ -150,7 +146,7 @@ def do_wasm_work(entry: RequestEntry):
 
     deployment = deployments[entry.deployment_id]
 
-    print(f'Preparing Wasm module "{entry.module_name}"...')
+    logger.debug("Preparing Wasm module %r", entry.module_name)
     module, wasm_args = deployment.prepare_for_running(
         entry.module_name,
         entry.function_name,
@@ -158,9 +154,9 @@ def do_wasm_work(entry: RequestEntry):
         entry.request_files
     )
 
-    print(f'Running Wasm function "{entry.function_name}"...')
+    logger.debug("Running Wasm function %r", entry.function_name)
     raw_output = module.run_function(entry.function_name, wasm_args)
-    print(f'Result: {raw_output}')
+    logger.debug("... Result: %r", raw_output, extra={"raw_output": raw_output})
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
@@ -193,8 +189,9 @@ def make_history(entry: RequestEntry):
         entry.result = do_wasm_work(entry)
         entry.success = True
     except Exception as err:
-        print(f"Error running WebAssembly function '{entry.function_name}'")
-        traceback.print_exc(file=sys.stdout)
+        logger.error("Error running WebAssembly function %r", entry.function_name, exc_info=True, extra={
+            "request": entry,
+        })
         entry.result = str(err)
         entry.success = False
 
@@ -213,7 +210,10 @@ def create_app(*args, **kwargs) -> Flask:
 
     Registers the blueprint and initializes zeroconf.
     '''
-    app = Flask(os.environ["FLASK_APP"], *args, **kwargs)
+    if is_running_from_reloader():
+        raise RuntimeError("Running from reloader is not supported.")
+    
+    app = Flask(os.environ.get("FLASK_APP", __name__), *args, **kwargs)
 
     # Create instance directory if it does not exist.
     Path(app.instance_path).mkdir(exist_ok=True)
@@ -235,31 +235,10 @@ def create_app(*args, **kwargs) -> Flask:
     # add sentry logging
     app.config.setdefault('SENTRY_DSN', os.environ.get('SENTRY_DSN'))
 
-    sentry_dsn = app.config.get("SENTRY_DSN")
-
-    if sentry_dsn:
-        sentry_sdk.init(
-            dsn=sentry_dsn,
-            integrations=[
-                FlaskIntegration(),
-                #RequestsIntegration(),
-            ],
-            # Set traces_sample_rate to 1.0 to capture 100%
-            traces_sample_rate=1.0
-        )
-        print("Sentry logging is set up!")
-    else:
-        print("Sentry not configured")
+    from .logging.logger import init_app as init_logging  # pylint: disable=import-outside-toplevel
+    init_logging(app, logger=logger)
 
     app.register_blueprint(bp)
-
-    # If werkzeug reloader is running, it starts app in subprocess.
-    # See: https://werkzeug.palletsprojects.com/en/2.1.x/serving/#reloader
-    # To prevent broadcasting services when in main reloader thread,
-    # try detecting if running on debug mode, and in reloader thread.
-    # Todo: If reloaded is enabled, but debugging is not, this will fail.
-    if not get_debug_flag() or is_running_from_reloader():
-        init_zeroconf(app)
 
     return app
 
@@ -479,7 +458,7 @@ def deployment_create():
     try:
         module_configs = fetch_modules(modules)
     except FetchFailures as err:
-        print(err)
+        logger.error("Failed fetching modules", exc_info=True)
         return endpoint_failed(
             request,
             msg=f'{len(err.errors)} fetch failures',

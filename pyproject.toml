@@ -14,7 +14,8 @@ repository = "https://github.com/LiquidAI-project/wasmiot-supervisor"
 
 [project.optional-dependencies]
 dev = [
-  "bump-my-version"
+  "bump-my-version",
+  "rich", "flask-rich"  # For better logging
 ]
 
 [tool.setuptools]

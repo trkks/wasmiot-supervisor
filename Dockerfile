@@ -11,21 +11,23 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED 1
 
 # [Optional] Uncomment this section to install additional OS packages.
-RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
-    && apt-get -y install --no-install-recommends libgpiod2 \
-    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && export DEBIAN_FRONTEND=noninteractive \
+    && apt-get -y install --no-install-recommends libgpiod2
 
 ## Install requirements using pip. This is done before copying the app, so that
 ## requirements layer is cached. This way, if app code changes, only app code is
 ## copied, and requirements are not re-installed.
 COPY requirements.txt /tmp/pip-tmp/
-RUN pip --disable-pip-version-check install -r /tmp/pip-tmp/requirements.txt && \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip --disable-pip-version-check install -r /tmp/pip-tmp/requirements.txt && \
     rm -rf /tmp/pip-tmp
 
 ## Install self as editable (`-e`) module. In a long run it we should remove `COPY`
 ## and only install app as a package.
 COPY . .
-RUN pip --disable-pip-version-check install -v -e .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip --disable-pip-version-check install -v -e .
 
 CMD ["python", "-m", "host_app"]
 
@@ -45,6 +47,7 @@ ENV SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT}
 
 ENV PYTHONDONTWRITEBYTECODE 1
 
-RUN pip --disable-pip-version-check install -v -e .[dev]
+RUN  --mount=type=cache,target=/root/.cache/pip \
+    pip --disable-pip-version-check install -v -e .[dev]
 
 RUN su vscode -c "mkdir -p /home/vscode/.vscode-server/extensions"
