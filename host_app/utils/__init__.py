@@ -7,6 +7,7 @@ FILE_TYPES = [
     "image/jpeg",
     "image/jpg",
     "application/octet-stream",
+    "application/wasm",
     "text/html",
     "text/javascript",
 ]

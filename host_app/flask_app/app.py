@@ -400,11 +400,17 @@ def request_history_list(request_id=None):
     return json_response
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
-def run_module_function(deployment_id, module_name, function_name):
+@bp.route('/<deployment_id>/modules/<module_name>/<function_name>/<filename>', methods=["GET"])
+def run_module_function(deployment_id, module_name, function_name, filename=None):
     '''
     Execute the function in WebAssembly module and act based on instructions
     attached to the deployment of this call/execution.
     '''
+
+    if filename:
+        # If a filename is passed, this route works merely for file serving.
+        return send_file(module_mount_path(module_name, filename))
+
     if deployment_id not in deployments:
         return endpoint_failed(request, 'deployment does not exist', 404)
 
@@ -445,11 +451,6 @@ def run_module_function(deployment_id, module_name, function_name):
     # Return a link to this request's result (which could link further until
     # some useful value is found).
     return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
-
-@bp.route('/debug/<module_name>/<filename>')
-def debug_serve_module_mount(module_name: str, filename: str):
-    """Respond with a file mounted to module for debugging purposes."""
-    return send_file(module_mount_path(module_name, filename))
 
 @bp.route('/deploy/<deployment_id>', methods=['DELETE'])
 def deployment_delete(deployment_id):
