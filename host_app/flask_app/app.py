@@ -243,6 +243,9 @@ def create_app(*args, **kwargs) -> Flask:
     # Enable mDNS advertising.
     init_zeroconf(app)
 
+    # Start thread that handles the Wasm work queue.
+    init_wasm_worker()
+
     return app
 
 
@@ -270,6 +273,14 @@ def init_zeroconf(app: Flask):
     app.zeroconf = Zeroconf()
     app.zeroconf.register_service(service_info)
 
+    atexit.register(teardown_zeroconf, app)
+
+
+def init_wasm_worker():
+    """
+    Set up and start a thread that continuously dequeues given work for running
+    Wasm.
+    """
     def teardown_worker():
         """Signal the worker thread to stop and wait for it to finish."""
         wasm_queue.put(None)
@@ -281,7 +292,6 @@ def init_zeroconf(app: Flask):
     wasm_worker_thread = threading.Thread(target=wasm_worker, daemon=True)
     wasm_worker_thread.start()
 
-    atexit.register(teardown_zeroconf, app)
     # Stop the worker thread before exiting.
     atexit.register(teardown_worker)
 
