@@ -240,6 +240,9 @@ def create_app(*args, **kwargs) -> Flask:
 
     app.register_blueprint(bp)
 
+    # Enable mDNS advertising.
+    init_zeroconf(app)
+
     return app
 
 
