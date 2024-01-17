@@ -18,9 +18,10 @@ from host_app.utils.mount import MountStage, MountPathFile
 
 
 EndpointArgs = str | list[str] | dict[str, Any] | None
-EndpointData = list[str] | None
+EndpointData = list[MountPathFile] | None
 """List of mount names that the module defines as outputs of a ran function"""
 EndpointOutput = Tuple[EndpointArgs, EndpointData]
+
 
 @dataclass
 class CallData:
@@ -119,6 +120,8 @@ class Deployment:
     endpoints: ModuleEndpointMap
     _instructions: dict[str, Any]
     _mounts: dict[str, Any]
+    peers: dict[str, list[str]]
+    '''Mapping to lists of peer-device execution URLs'''
     modules: dict[str, ModuleConfig] = field(init=False)
     instructions: ModuleLinkMap = field(init=False)
     mounts: ModuleMountMap = field(init=False)
@@ -342,8 +345,7 @@ class Deployment:
             # The result is expected to be found in a file mounted to the module.
             assert len(output_mounts) == 1, \
                 f'One and only one output file expected for media type "{response_endpoint.media_type}"'
-            out_img_name = output_mounts[0].path
-            return None, [out_img_name]
+            return None, [output_mounts[0]]
         raise NotImplementedError(f'Unsupported response media type "{response_endpoint.media_type}"')
 
 def can_be_represented_as_wasm_primitive(schema: Schema) -> bool:

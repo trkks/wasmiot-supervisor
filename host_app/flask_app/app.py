@@ -17,7 +17,7 @@ import threading
 from typing import Any, Dict, Generator, Tuple
 
 import atexit
-from flask import Flask, Blueprint, jsonify, current_app, request, send_file
+from flask import Flask, Blueprint, jsonify, current_app, request, send_file, Response, redirect
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
 from werkzeug.utils import secure_filename
@@ -35,11 +35,14 @@ from host_app.wasm_utils.wasmtime import WasmtimeRuntime
 from host_app.utils.configuration import get_device_description, get_wot_td
 from host_app.utils.routes import endpoint_failed
 from host_app.utils.deployment import Deployment, CallData
+from host_app.utils.mount import MountPathFile
 
 
 _MODULE_DIRECTORY = 'wasm-modules'
 _PARAMS_FOLDER = 'wasm-params'
+_OUTPUT_FOLDER = "wasm-output-files"
 INSTANCE_PARAMS_FOLDER = None
+INSTANCE_OUTPUT_FOLDER = None
 
 OUTPUT_LENGTH_BYTES = 32 // 8
 """
@@ -85,16 +88,19 @@ def request_counter() -> Generator[int, None, None]:
 request_id_counters: Dict[str, Generator[int, None, None]] = {}
 
 
-def path_to_string(result: Any) -> Any:
-    """Converts all included Path objects to strings."""
-    if isinstance(result, Path):
-        return str(result)
+def path_to_link(result: Any, request_id=None) -> Any:
+    '''
+    Converts all included output-mount paths (represented as strings) to links
+    where the file is available based on request entry ID.
+    '''
+    if isinstance(result, MountPathFile):
+        return results_route(request_id, full=True, file=result.path)
     if isinstance(result, (list, tuple)):
-        return [path_to_string(item) for item in result]
+        return [path_to_link(item, request_id) for item in result]
     if isinstance(result, dict):
-        return {key: path_to_string(value) for key, value in result.items()}
+        return {key: path_to_link(value, request_id) for key, value in result.items()}
     if isinstance(result, RequestEntry):
-        result.result = path_to_string(result.result)
+        result.result = path_to_link(result.result, result.request_id)
     return result
 
 
@@ -122,11 +128,12 @@ class RequestEntry():
             request_id_counters[request_id] = request_counter()
         self.request_id = f'{request_id}:{next(request_id_counters[request_id])}'
 
-request_history = []
+request_history: list[RequestEntry] = []
 '''Log of all the requests handled by this supervisor'''
 
 wasm_queue = queue.Queue()
 '''Queue of work for asynchronous WebAssembly execution'''
+
 
 def module_mount_path(module_name: str, filename: str | None = None) -> Path:
     """
@@ -134,6 +141,12 @@ def module_mount_path(module_name: str, filename: str | None = None) -> Path:
     module
     """
     return Path(INSTANCE_PARAMS_FOLDER, module_name, filename if filename else "")
+
+def per_request_file_path(request_id, mount_path):
+    '''
+    Return the file path where output-mounts are saved identified by request.
+    '''
+    return Path(INSTANCE_OUTPUT_FOLDER, request_id, mount_path)
 
 def do_wasm_work(entry: RequestEntry):
     '''
@@ -167,6 +180,31 @@ def do_wasm_work(entry: RequestEntry):
 
     if not isinstance(next_call, CallData):
         # No sub-calls needed.
+        # For any output mounts, save them to request-identifiable files.
+        endpoint_data = this_result[1]
+        for output_mount in endpoint_data:
+            output_mount_path = module_mount_path(entry.module_name, output_mount.path)
+
+            # NOTE: Only the mount filename is regarded i.e. mounts cannot have
+            # directory structure!
+            request_entry_path = per_request_file_path(entry.request_id, output_mount_path.name)
+
+            # Make sure the directories exist before writing.
+            if not request_entry_path.exists():
+                os.makedirs(os.path.dirname(request_entry_path), exist_ok=True)
+
+            with open(output_mount_path, "rb") as source:
+                contents = source.read()
+            logger.info("Mount %s contents length: %d", output_mount_path, len(contents))
+
+            with open(request_entry_path, "wb") as target:
+                target.write(contents)
+            logger.info("Output file %s written", request_entry_path)
+
+            # Clear the mount file now that is has been identifiably saved elsewhere.
+            with open(output_mount_path, "wb") as _:
+                pass
+
         return this_result
 
     headers = next_call.headers
@@ -222,12 +260,15 @@ def create_app(*args, **kwargs) -> Flask:
         'secret_key': 'dev',
         'MODULE_FOLDER': Path(app.instance_path, _MODULE_DIRECTORY),
         'PARAMS_FOLDER': Path(app.instance_path, _PARAMS_FOLDER),
+        'OUTPUT_FOLDER': Path(app.instance_path, _OUTPUT_FOLDER),
     })
 
-    # Set this in order to later access module params folder that Flask set up
-    # on app creation.
+    # Set these in order to later access module params and outputs folder that
+    # Flask has set up on app creation.
     global INSTANCE_PARAMS_FOLDER
     INSTANCE_PARAMS_FOLDER = app.config['PARAMS_FOLDER']
+    global INSTANCE_OUTPUT_FOLDER
+    INSTANCE_OUTPUT_FOLDER = app.config['OUTPUT_FOLDER']
 
     # Load config from instance/ -directory
     app.config.from_pyfile("config.py", silent=True)
@@ -366,7 +407,8 @@ def thingi_health():
          "cpuUsage": random.random()
     })
 
-def results_route(request_id=None, full=False):
+
+def results_route(request_id=None, *, full=False, file=None):
     '''
     Return the route where execution/request results can be read from.
 
@@ -374,22 +416,55 @@ def results_route(request_id=None, full=False):
     that routes can easily return URL for caller to read execution results.
     '''
     root = 'request-history'
-    route = f'{root}/{request_id}' if request_id else root
-    return f'{request.root_url}{route}' if full else route
+    base_route = f'{root}/{request_id}' if request_id else root
+    if file:
+        # HACKY: The glob symbol means all files, otherwise interpreted as file
+        # name.
+        base_route += '/files' if file == '*' else f'/files/{file}'
+    return f'{request.root_url}{base_route}' if full else base_route
+
+
+@bp.route('/' + results_route('<request_id>', file='*'))
+@bp.route('/' + results_route('<request_id>', file='<filename>'))
+def request_history_file_list(request_id, filename=None):
+    '''Return a list of or a specific entry result __files__ of a previous execution call'''
+    if filename is None:
+        # TODO: Zip all the files for sending
+        raise NotImplementedError
+
+    return send_file(per_request_file_path(request_id, filename))
+
 
 @bp.route('/' + results_route())
 @bp.route('/' + results_route('<request_id>'))
 def request_history_list(request_id=None):
-    '''Return a list of or a specific entry result from previous call'''
+    '''Return a list of or a specific entry result of a previous execution call'''
     if request_id is None:
-        return jsonify(path_to_string(request_history))
+        return jsonify(path_to_link(request_history))
     matching_requests = [x for x in request_history if x.request_id == request_id]
     if len(matching_requests) == 0:
         return endpoint_failed(request, 'no matching entry in history', 404)
     first_match = matching_requests[0]
-    json_response = jsonify(path_to_string(first_match))
+    json_response = jsonify(path_to_link(first_match))
     json_response.status_code = 200 if first_match.success else 500
     return json_response
+
+
+def name_is_local(deployment_id, module_name, function_name):
+    '''Return True if the namepath exists locally.'''
+    return deployment_id in deployments \
+        and module_name in deployments[deployment_id].modules
+        # TODO: Should check for function name also, but for that a Wasm
+        # instance is needed.
+
+
+def name_is_peer(deployment_id, module_name, function_name):
+    '''Return True if the namepath exists on a known peer device.'''
+    return deployment_id in deployments \
+        and module_name in deployments[deployment_id].peers \
+        and function_name in deployments[deployment_id].peers[module_name] \
+        and len(deployments[deployment_id].peers[module_name][function_name]) > 0
+
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>/<filename>', methods=["GET"])
@@ -401,13 +476,18 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
 
     if filename:
         # If a filename is passed, this route works merely for file serving.
+        # NOTE: Intented to use by __modules__, not e.g. end users.
         return send_file(module_mount_path(module_name, filename))
 
-    if deployment_id not in deployments:
-        return endpoint_failed(request, 'deployment does not exist', 404)
-
-    if module_name not in deployments[deployment_id].modules:
-        return endpoint_failed(request, f"module {module_name} not found for this deployment")
+    if not name_is_local(deployment_id, module_name, function_name):
+        if not name_is_peer(deployment_id, module_name, function_name):
+            return endpoint_failed(request, 'deployment does not exist', 404)
+        # NOTE: Selecting the first peer in order.
+        peer_url = deployments[deployment_id].peers[module_name][0] \
+            + f'/{function_name}' \
+            + (f'/{filename}' if filename else '')
+        # The function is on another device, so redirect caller there.
+        return redirect(peer_url)
 
     # Write input data to filesystem.
     input_file_paths: Dict[str, str] = {}
@@ -443,6 +523,7 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
     # Return a link to this request's result (which could link further until
     # some useful value is found).
     return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
+
 
 @bp.route('/deploy/<deployment_id>', methods=['DELETE'])
 def deployment_delete(deployment_id):
@@ -495,6 +576,7 @@ def deployment_create():
         endpoints=data["endpoints"],
         _instructions=data["instructions"],
         _mounts=data["mounts"],
+        peers=data["peers"],
     )
 
     # If the fetching did not fail (that is, crash), return success.
