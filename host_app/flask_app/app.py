@@ -181,7 +181,7 @@ def do_wasm_work(entry: RequestEntry):
     if not isinstance(next_call, CallData):
         # No sub-calls needed.
         # For any output mounts, save them to request-identifiable files.
-        endpoint_data = this_result[1]
+        endpoint_data = this_result[1] or []
         for output_mount in endpoint_data:
             output_mount_path = module_mount_path(entry.module_name, output_mount.path)
 
@@ -210,7 +210,14 @@ def do_wasm_work(entry: RequestEntry):
     headers = next_call.headers
     # NOTE: IIUC this matches how 'requests' documentation instructs to do for
     # multi-file uploads, so I'm guessing it closes the opened files once done.
-    files = { name: open(module_mount_path(module.name, name), "rb") for name in next_call.files }
+    files = {
+        p.name: open(p, "rb")
+        for p
+        in map(
+            lambda x: module_mount_path(entry.module_name, x.path),
+            next_call.files
+        )
+    }
 
     sub_response = getattr(requests, next_call.method)(
         next_call.url,
