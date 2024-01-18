@@ -101,13 +101,24 @@ a deployment can not have two modules with the same name.
 """
 
 FunctionLinkMap = dict[str, FunctionLink]
-ModuleLinkMap = dict[str, dict[FunctionLinkMap]]
+
+@dataclass
+class Instructions:
+    '''
+    Instructions for deployment execution i.e. running and chaining functions
+    together. 
+    '''
+    main: str | None = None
+    start: str | None = None
+    modules: dict[str, dict[FunctionLinkMap]] = field(default_factory=dict)
 
 MountPathMap = dict[str, MountPathFile]
 MountStageMap = dict[MountStage, list[MountPathMap]]
 FunctionMountMap = dict[str, MountStageMap]
 ModuleMountMap = dict[str, FunctionMountMap]
 
+# TODO: This should probably not be a dataclass as many of its fields need
+# processing post-constructor.
 @dataclass
 class Deployment:
     '''
@@ -123,7 +134,7 @@ class Deployment:
     peers: dict[str, list[str]]
     '''Mapping to lists of peer-device execution URLs'''
     modules: dict[str, ModuleConfig] = field(init=False)
-    instructions: ModuleLinkMap = field(init=False)
+    instructions: Instructions = field(init=False)
     mounts: ModuleMountMap = field(init=False)
 
     def __post_init__(self):
@@ -150,15 +161,17 @@ class Deployment:
 
         # Build how function calls are chained or linked to each other across
         # endpoints and other devices.
-        self.instructions = {}
-        # NOTE: This is what current implementation sends as instructions which
-        # might change to not have the 'modules' key at all.
+        self.instructions = Instructions()
+
+        # Handle case where there is a main script.
+        if "main" in self._instructions:
+            self.instructions.main = self._instructions["main"]
+            self.instructions.start = self._instructions["start"]
+
         for module_name, functions in self._instructions['modules'].items():
-            self.instructions[module_name] = {}
+            self.instructions.modules[module_name] = {}
             for function_name, link in functions.items():
-                # NOTE: The from-keyword prevents using the double splat
-                # operator for key-value initialization of this class.
-                self.instructions[module_name][function_name] = \
+                self.instructions.modules[module_name][function_name] = \
                     FunctionLink(from_=link["from"], to=link["to"])
 
     def _next_target(self, module_name, function_name) -> Endpoint | None:
@@ -168,7 +181,7 @@ class Deployment:
 
         # TODO: Check if the endpoint is on this device already or not to
         # prevent unnecessary network requests.
-        return self.instructions[module_name][function_name].to
+        return self.instructions.modules[module_name][function_name].to
 
     def _connect_request_files_to_mounts(
         self,

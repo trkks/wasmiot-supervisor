@@ -11,25 +11,20 @@ import random
 import socket
 from pathlib import Path
 import queue
-import string
-import struct
 import threading
 from typing import Any, Dict, Generator, Tuple
 
 import atexit
-from flask import Flask, Blueprint, jsonify, current_app, request, send_file, Response, redirect
+from flask import Flask, Blueprint, jsonify, current_app, request, send_file, redirect, url_for
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
+# TODO: Use this whenever doing file I/O:
 from werkzeug.utils import secure_filename
 
 import requests
 from zeroconf import ServiceInfo, Zeroconf
 
-import cv2
-import numpy as np
-
-from host_app.wasm_utils.wasm import wasm_modules
-from host_app.wasm_utils.wasm_api import MLModel, ModuleConfig
+from host_app.wasm_utils.wasm_api import ModuleConfig
 from host_app.wasm_utils.wasmtime import WasmtimeRuntime
 
 from host_app.utils.configuration import get_device_description, get_wot_td
@@ -142,11 +137,11 @@ def module_mount_path(module_name: str, filename: str | None = None) -> Path:
     """
     return Path(INSTANCE_PARAMS_FOLDER, module_name, filename if filename else "")
 
-def per_request_file_path(request_id, mount_path):
+def per_request_file_path(request_id, mount_name):
     '''
     Return the file path where output-mounts are saved identified by request.
     '''
-    return Path(INSTANCE_OUTPUT_FOLDER, request_id, mount_path)
+    return Path(INSTANCE_OUTPUT_FOLDER, request_id, mount_name)
 
 def do_wasm_work(entry: RequestEntry):
     '''
@@ -177,7 +172,7 @@ def do_wasm_work(entry: RequestEntry):
     this_result, next_call = deployment.interpret_call_from(
         module.name, entry.function_name, raw_output
     )
-
+ 
     if not isinstance(next_call, CallData):
         # No sub-calls needed.
         # For any output mounts, save them to request-identifiable files.
@@ -188,7 +183,7 @@ def do_wasm_work(entry: RequestEntry):
             # NOTE: Only the mount filename is regarded i.e. mounts cannot have
             # directory structure!
             request_entry_path = per_request_file_path(entry.request_id, output_mount_path.name)
-
+            
             # Make sure the directories exist before writing.
             if not request_entry_path.exists():
                 os.makedirs(os.path.dirname(request_entry_path), exist_ok=True)
@@ -415,13 +410,35 @@ def thingi_health():
     })
 
 
+def find_request(request_id):
+    '''
+    Return the single entry matched to the ID or None if not found.
+    '''
+    return next(filter(lambda x: x.request_id == request_id, request_history), None)
+
+
 def results_route(request_id=None, *, full=False, file=None):
     '''
     Return the route where execution/request results can be read from.
 
     If full is True, return the full URL, otherwise just the path. This is so
     that routes can easily return URL for caller to read execution results.
+
+    If the result should be a main script, return the route that serves said
+    script relative to "deployment root".
     '''
+    # NOTE: Handling main script execution here to return special URL that is
+    # more ergonomically relative to Wasm execution route.
+    if request_id and full and file is None:
+        did = find_request(request_id).deployment_id
+        is_main_script_execution = bool(deployments[did].instructions.main)
+        if is_main_script_execution:
+            return request.root_url.removesuffix('/') \
+                + url_for(
+                    'debug-thingi.deployment_index',
+                    deployment_id=did, request_id=request_id,
+                )
+
     root = 'request-history'
     base_route = f'{root}/{request_id}' if request_id else root
     if file:
@@ -441,19 +458,16 @@ def request_history_file_list(request_id, filename=None):
 
     return send_file(per_request_file_path(request_id, filename))
 
-
 @bp.route('/' + results_route())
 @bp.route('/' + results_route('<request_id>'))
 def request_history_list(request_id=None):
     '''Return a list of or a specific entry result of a previous execution call'''
     if request_id is None:
         return jsonify(path_to_link(request_history))
-    matching_requests = [x for x in request_history if x.request_id == request_id]
-    if len(matching_requests) == 0:
+    if not (match := find_request(request_id)):
         return endpoint_failed(request, 'no matching entry in history', 404)
-    first_match = matching_requests[0]
-    json_response = jsonify(path_to_link(first_match))
-    json_response.status_code = 200 if first_match.success else 500
+    json_response = jsonify(path_to_link(match))
+    json_response.status_code = 200 if match.success else 500
     return json_response
 
 
@@ -471,6 +485,36 @@ def name_is_peer(deployment_id, module_name, function_name):
         and module_name in deployments[deployment_id].peers \
         and function_name in deployments[deployment_id].peers[module_name] \
         and len(deployments[deployment_id].peers[module_name][function_name]) > 0
+
+
+@bp.route('/<deployment_id>')
+def deployment_index(deployment_id):
+    '''
+    If there is one, serve the deployment index page previously generated by a
+    Wasm call.
+    '''
+    # Request id must be supplied in query params.
+    request_id = request.args.get("request_id")
+
+    # Find the result of previously ran index function that should have produced
+    # the file of the index page.
+    entry = find_request(request_id)
+
+    if not entry:
+        return endpoint_failed(request, 'request entry does not exist', 404)
+
+    if entry.deployment_id != deployment_id:
+        return endpoint_failed(request, 'request entry does not belong to the deployment', 403)
+
+    if not entry.success:
+        return endpoint_failed(request, f'index function had failed: "{entry.result}"', 500)
+
+    output_mount = entry.result[1][0]
+    output_mount_path = module_mount_path(entry.module_name, output_mount.path)
+    request_entry_path = per_request_file_path(entry.request_id, output_mount_path.name)
+
+    # Respond with the found index page.
+    return send_file(request_entry_path)
 
 
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
