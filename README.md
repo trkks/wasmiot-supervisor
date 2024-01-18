@@ -322,9 +322,9 @@ You can find another test image in the [wasi-inference repository in 'testdata']
 - Test the fibonacci deployment from the command line:
     - List the deployments using the orchestrator: [http://localhost:3000/file/manifest](http://localhost:3000/file/manifest)
     - Find the item with the name `fibo-dep`
-    - From `fullManifest` -> `deploymentId` you should see the deployment id
-    - From `fullManifest` -> `endpoints` -> `servers` -> `url` you should see the device address
-    - From `fullManifest` -> `endpoints` -> `paths` you should see the path for the fibonacci function
+    - From `solution` -> `deploymentId` you should see the deployment id
+    - From `solution` -> `endpoints` -> `servers` -> `url` you should see the device address
+    - From `solution` -> `endpoints` -> `paths` you should see the path for the fibonacci function
     - From the commandline (replace DEPLOYMENT_ID with the one in your listing):
 
         ```bash
