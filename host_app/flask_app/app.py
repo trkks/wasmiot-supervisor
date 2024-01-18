@@ -203,9 +203,10 @@ def do_wasm_work(entry: RequestEntry):
         return this_result
 
     headers = next_call.headers
-    # NOTE: IIUC this matches how 'requests' documentation instructs to do for
-    # multi-file uploads, so I'm guessing it closes the opened files once done.
     files = {
+        # NOTE: IIUC opening the files here matches how 'requests' documentation
+        # instructs to do for multi-file uploads, so I'm guessing it closes the
+        # opened files once done.
         p.name: open(p, "rb")
         for p
         in map(
@@ -236,7 +237,6 @@ def make_history(entry: RequestEntry):
         entry.success = False
 
     request_history.append(entry)
-    return entry
 
 def wasm_worker():
     '''Constantly try dequeueing work for using WebAssembly modules'''
@@ -429,8 +429,12 @@ def results_route(request_id=None, *, full=False, file=None):
     '''
     # NOTE: Handling main script execution here to return special URL that is
     # more ergonomically relative to Wasm execution route.
-    if request_id and full and file is None:
-        did = find_request(request_id).deployment_id
+    if request_id \
+        and full \
+        and file is None \
+        and (entry := find_request(request_id)) \
+    :
+        did = entry.deployment_id
         is_main_script_execution = bool(deployments[did].instructions.main)
         if is_main_script_execution:
             return request.root_url.removesuffix('/') \
