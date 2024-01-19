@@ -116,314 +116,64 @@ docker build -t ghcr.io/liquidai-project/wasmiot-supervisor:devcontainer --targe
 ## Testing deployment
 
 For testing the supervisor you need to provide it with a "deployment manifest" and the WebAssembly modules to run along with their descriptions.
-The modules can be found in the [wasmiot-modules repo](https://github.com/LiquidAI-project/wasmiot-modules) (see the link for build instructions).
-The simplest deployment to test is counting the Fibonacci sequence with the `fibo` module.
 
-After building the WebAssembly modules, you can start up a simple file server inside the `modules` directory containing `.wasm` files in `wasm-binaries/` when the `build.sh` script is used:
-### Locally
-```
-# Define hostname of the server for making requests later.
-export WASM_SERVER_HOST=localhost
-cd modules
-python3 -m http.server
-```
-### Within Docker network
-```
-# Define hostname of the server for making requests later.
-export WASM_SERVER_HOST=wasm-server
-cd modules
-# Use the provided script and Dockerfile
-./docker-server/run.sh ./docker-server/Dockerfile
-```
+Some simple test modules can be found in the
+`wasmiot-orchestrator` project's directory `/client/testData/wasm`.
+An all-round deployment to test is deploying the `abc` module which has three
+functions `a`, `b` and `c` outputting numbers "seeded" by files (or
+_mounts_) deployed and sent in HTTP requests.
 
-This will allow the supervisor to fetch needed files on deployment.
+Trying to use the supervisor directly is not recommended and instead use the
+command line interface provided by `wasmiot-orchestrator`.
 
-Using `curl` you can deploy the `fibo` module with the following command containing the needed manifest as data:
-```bash
-curl \
-    --header "Content-Type: application/json" \
-    --request POST \
-    --data "{
-        \"deploymentId\":\"0\",
-        \"modules\":[
-            {
-                \"id\":\"0\",
-                \"name\":\"fiboMod\",
-                \"urls\":{
-                    \"binary\":\"http://${WASM_SERVER_HOST}:8000/wasm-binaries/wasm32-unknown-unknown/fibo.wasm\",
-                    \"description\":\"http://${WASM_SERVER_HOST}:8000/fibo/open-api-description.json\",
-                    \"other\":[]
-                }
-            }
-        ],
-        \"instructions\": {
-            \"modules\": {
-                \"fiboMod\": {
-                    \"fibo\": {
-                        \"paths\": {
-                            \"\": {
-                                \"get\": {
-                                    \"parameters\": [{
-                                        \"name\": \"iterations\",
-                                        \"in\": \"query\",
-                                        \"required\": true,
-                                        \"schema\": {
-                                            \"type\": \"integer\",
-                                            \"format\": \"int64\"
-                                        }
-                                    }],
-                                    \"responses\": {
-                                        \"200\": {
-                                            \"content\": {
-                                                \"application/json\": {
-                                                    \"schema\": {
-                                                        \"type\": \"integer\",
-                                                        \"format\": \"int64\"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        \"to\": null
-                    }
-                }
-            }
-        }
-    }" \
-    http://localhost:5000/deploy
-```
-
-Then on success, you can count the (four-byte representation of) 7th Fibonacci number with the command:
-```bash
-curl localhost:5000/0/modules/fiboMod/fibo?iterations=7
-```
-The actual value can be found by following the returned URL pointing to the
-final computation result.
-## Testing ML deployment
-
-As a test module you can use the example from [here](https://github.com/radu-matei/wasi-tensorflow-inference).
-That repository contains the code for the wasm-module (source in crates/wasi-mobilenet-inference pre-compiled binary in model/optimized-wasi.wasm) and the model file
-(in model/mobilenet_v2_1.4_224_frozen.pb).
-
-You need to provide both of these files for the supervisor to fetch like with the `fibo` module.
-
-### Without orchestrator
-Add the ML-module's files to where your Python HTTP-server (started in the `fibo` test) can serve them from, e.g.:
-```
-cd modules
-curl -L https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/optimized-wasi.wasm > wasm-binaries/wasm32-wasi/ml.wasm
-curl -L https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/mobilenet_v2_1.4_224_frozen.pb > wasm-binaries/wasm32-wasi/ml.pb
-```
-
-Now deploy the files with:
-```bash
-curl \
-    --header "Content-Type: application/json" \
-    --request POST \
-    --data "{
-        \"deploymentId\": \"1\",
-        \"modules\": [
-            {
-                \"id\": \"1\",
-                \"name\": \"mobilenet\",
-                \"urls\": {
-                    \"binary\": \"http://${WASM_SERVER_HOST}:8000/wasm-binaries/wasm32-wasi/ml.wasm\",
-                    \"description\": \"http://${WASM_SERVER_HOST}:8000/object-inference-open-api-description.json\",
-                    \"other\": [
-                        \"http://${WASM_SERVER_HOST}:8000/wasm-binaries/wasm32-wasi/ml.pb\"
-                    ]
-                }
-            }
-        ],
-        \"instructions\": {
-            \"modules\": {
-                \"mobilenet\": {
-                    \"infer_from_ptrs\": {
-                        \"paths\": {
-                            \"\": {
-                                \"get\": {
-                                    \"parameters\": [{
-                                        \"name\": \"data\",
-                                        \"in\": \"requestBody\",
-                                        \"required\": true,
-                                        \"schema\": {}
-                                    }],
-                                    \"responses\": {
-                                        \"200\": {
-                                            \"content\": {
-                                                \"application/json\": {
-                                                    \"schema\": {
-                                                        \"type\": \"integer\",
-                                                        \"format\": \"int64\"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        \"to\": null
-                    }
-                }
-            }
-        }
-    }" \
-    http://localhost:5000/deploy
-```
-
-After which you can test the inference with some image file via curl, eg.:
-```
-# Download a test image
-curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg > husky.jpeg
-# Send the image to supervisor and wait for it to return the classification
-curl -F data=@./husky.jpeg http://localhost:5000/1/modules/mobilenet/infer_from_ptrs
-```
-
-The supervisor will again, aften some time, respond with a URL, that can be
-followed to inspect the desired result integer that will match a line number
-in [the labels file](https://github.com/radu-matei/wasi-tensorflow-inference/blob/master/model/labels.txt)
-of the detected object in the input image.
-
-You can find another test image in the [wasi-inference repository in 'testdata'](https://github.com/radu-matei/wasi-tensorflow-inference/tree/master/testdata).
-
-### With orchestrator
+### Interacting through orchestrator
 
 - Start the orchestrator (see [wasmiot-orchestrator](https://github.com/LiquidAI-project/wasmiot-orchestrator) for instructions).
     - in these instructions the orchestrator is assumed be at `http://localhost:3000`
 - Install and start the supervisor (see [installation](./README.md#installation)).
     - in these instructions the supervisor is assumed be at `http://localhost:5000` with a device name `my-device`
-- From the orchestrator's website check that `my-device` is discovered by the orhestrator: [http://localhost:3000/file/device](http://localhost:3000/file/device)
+- From the orchestrator's API check that `my-device` is discovered by the orhestrator: [http://localhost:3000/file/device](http://localhost:3000/file/device)
+
+
+#### Using the orchestrator CLI
+- The CLI tool is found at the `wasmiot-orchestrator` project under
+`/client/cli/` (see contained `README.md` for usage with Docker). There are
+`npm` scripts provided for compiling (from TypeScript ) and running this tool.
+
+- __In these instructions the `npm` scripts are assumed to be run inside Docker as per the CLI README.__
+
 - Create a new module with the orchestrator (Module creation):
-    - Name: `fibonacci`
-    - Openapi description: raw JSON content from [fibo/open-api-description.json](https://github.com/LiquidAI-project/wasmiot-modules/blob/main/modules/fibo/open-api-description.json)
-    - Select `Convert to JSON` and `Submit`
-- Push the new module to the orchestrator (Module upload):
-    - Select the module: choose `fibonacci`
-    - File to upload: choose a compiled `fibo.wasm` file (see [wasmiot-modules](https://github.com/LiquidAI-project/wasmiot-modules) for compilation instructions)
-    - Note that you might have to refresh the web page before the `fibonacci` module can be chosen
-    - Select `Submit`
-- Create a new deployment manifest (Deployment manifest creation):
-    - Name: `fibo-dep`
-    - Procedure-call sequence: select "Use my-device for fibonacci:fibo" (have only the 1 item in the sequence)
-    - Select `Convert to JSON` and `Submit`
-- Deploy the new module to the device (Deployment of deployment manifests):
-    - Select the deployment manifest: choose `fibo-dep`
-    - Note that you might have to refresh the web page before the `fibo-dep` manifest can be chosen
-    - Select `Deploy!`
-- Test the fibonacci deployment with the orchestrator (Execution):
-    - Select the deployment: choose `fibo-dep`
-    - Iteration count for fibonacci sequence: 12
-    - Select `Execute!`
-    - The response should be 233
-- Test the fibonacci deployment from the command line:
-    - List the deployments using the orchestrator: [http://localhost:3000/file/manifest](http://localhost:3000/file/manifest)
-    - Find the item with the name `fibo-dep`
-    - From `solution` -> `deploymentId` you should see the deployment id
-    - From `solution` -> `endpoints` -> `servers` -> `url` you should see the device address
-    - From `solution` -> `endpoints` -> `paths` you should see the path for the fibonacci function
-    - From the commandline (replace DEPLOYMENT_ID with the one in your listing):
+    - `npm run -- client module create abcmod </path/to/abc.wasm>`
+        - Choose `.wasm` compiled with `cargo --target wasm32-wasi`
 
-        ```bash
-        curl http://localhost:5000/DEPLOYMENT_ID/modules/fibonacci/fibo?iterations=12
-        ```
-
-        The answer should contain a link which directs to where the `result` field is 233.
-
-- For testing ML inference, create a new module with the orchestrator (Module creation):
-    - Name: `mobilenet`
-    - Openapi description: raw JSON content from [object-inference-open-api-description.json](https://github.com/LiquidAI-project/wasmiot-modules/blob/main/modules/object-inference-open-api-description.json)
-    - Select `Convert to JSON` and `Submit`
-- Push the new module to the orchestrator (Module upload):
-    - Select the module: choose `mobilenet`
-    - File to upload: choose `optimized-wasi.wasm` file (download link: [optimized-wasi.wasm](https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/optimized-wasi.wasm))
-    - Select `Submit`
-- Push the ML model to the orchestrator (Module upload):
-    - Select the module: choose `mobilenet`
-    - File to upload: choose `mobilenet_v2_1.4_224_frozen.pb` file (download link: [mobilenet_v2_1.4_224_frozen.pb](https://github.com/radu-matei/wasi-tensorflow-inference/raw/master/model/mobilenet_v2_1.4_224_frozen.pb))
-    - Select `Submit`
-- Create a new deployment manifest (Deployment manifest creation):
-    - Name: `mobilenet-dep`
-    - Procedure-call sequence: select "Use my-device for mobilenet:infer_from_ptrs" (have only the 1 item in the sequence)
-    - Select `Convert to JSON` and `Submit`
-- Deploy the module to the device (Deployment of deployment manifests):
-    - Select the deployment manifest: choose `mobilenet-dep`
-    - Select `Deploy!`
-- Test the ML deployment (Execution):
-    - Select the deployment: choose `mobilenet-dep`
-    - From the appearing file-input, upload `husky.jpg` (download link: [husky.jpg](https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg))
-    - Select `Execute!`
-
-    The inference result should be 250.
-
-- The ML deployment can also be tested from the command line:
+- Provide description and mount-files for the new module (Module description):
     ```bash
-    # First download the test image from GitHub and run the inference
-    curl -L https://raw.githubusercontent.com/radu-matei/wasi-tensorflow-inference/master/testdata/husky.jpeg > husky.jpeg
-    curl -F data=@./husky.jpeg http://localhost:5000/DEPLOYMENT_ID/modules/mobilenet/infer_from_ptrs
+    npm run -- client module desc abcmod </path/to/abc/description.json> -m deployFile -p </what/ever/file>
+    ```
+    - Note that this step can be performed again multiple times with different
+    file argument for `-p` and the change will reflect on the existing module.
+
+- Create a new deployment:
+    ```bash
+    npm run -- client deployment create abcdep -d -m abcmod -f <a|b|c>
+    ```
+    - The `-d` option can be left empty for automatic device selection of explicitly specified `-d my-device`.
+
+- Deploy the new module and mount files to the device:
+    ```bash
+    npm run -- client deployment deploy abcdep
     ```
 
-## Testing camera module
-
-```bash
-curl \
-    --header "Content-Type: application/json" \
-    --request POST \
-    --data '{
-        "deploymentId": "2",
-        "modules": [
-            {
-                "id": "2",
-                "name":"camera",
-                "urls":{
-                    "binary":"http://localhost:8000/wasm-binaries/wasm32-unknown-unknown/camera.wasm",
-                    "description":"http://localhost:8000/camera/open-api-description.json",
-                    "other":[]
-                }
-            }
-        ],
-        "instructions": {
-            "modules": {
-                "camera": {
-                    "take_image": {
-                        "paths": {
-                            "": {
-                                "get": {
-                                    "parameters": [],
-                                    "responses": {
-                                        "200": {
-                                            "description": "Return the image taken with a camera from the request",
-                                            "content": {
-                                                "image/jpeg": {}
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "to": null
-                    }
-                }
-            }
-        }
-    }' \
-    http://localhost:5000/deploy
-```
-
-To take an image with the camera. The image is save to file `temp_image.jpg`.
-
-```bash
-curl http://localhost:5000/2/modules/camera/take_image
-```
-
-To see all the results:
-
-```bash
-curl http://localhost:5000/request-history
-```
+- Test the `abcdep` deployment with the orchestrator. The arguments needed are
+dependent on the function you chose at deployment creation. For example in the
+case of `-f a` you also need to pass in a file for the `execFile` mount:
+    ```bash
+    npm run -- client execute abcdep '{"param0": 42, "param1": 69}' -m execFile -p </what/ever/file>
+    ```
+    - The response should be JSON containing a link to the result struct stored
+    at `my-device`. This result struct will then contain a `result` field with
+    your computed number and `success` field indicating if the process was
+    successfully completed by the supervisor.
 
 ## Citation
 
