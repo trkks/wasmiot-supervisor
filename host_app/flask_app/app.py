@@ -435,7 +435,10 @@ def results_route(request_id=None, *, full=False, file=None):
         and (entry := find_request(request_id)) \
     :
         did = entry.deployment_id
-        is_main_script_execution = bool(deployments[did].instructions.main)
+        dep = deployments[did]
+        is_main_script_execution = \
+            dep.instructions.main == entry.module_name \
+            and dep.instructions.start == entry.function_name
         if is_main_script_execution:
             return request.root_url.removesuffix('/') \
                 + url_for(
