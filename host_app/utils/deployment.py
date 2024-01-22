@@ -358,7 +358,7 @@ class Deployment:
             # The result is expected to be found in a file mounted to the module.
             assert len(output_mounts) == 1, \
                 f'One and only one output file expected for media type "{response_endpoint.media_type}"'
-            return None, [output_mounts[0]]
+            return wasm_output, [output_mounts[0]]
         raise NotImplementedError(f'Unsupported response media type "{response_endpoint.media_type}"')
 
 def can_be_represented_as_wasm_primitive(schema: Schema) -> bool:
