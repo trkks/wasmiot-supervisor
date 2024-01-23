@@ -478,7 +478,7 @@ def request_history_list(request_id=None):
     return json_response
 
 
-def name_is_local(deployment_id, module_name, function_name):
+def name_is_local(deployment_id, module_name, function_name=None):
     '''Return True if the namepath exists locally.'''
     return deployment_id in deployments \
         and module_name in deployments[deployment_id].modules
@@ -486,12 +486,18 @@ def name_is_local(deployment_id, module_name, function_name):
         # instance is needed.
 
 
-def name_is_peer(deployment_id, module_name, function_name):
-    '''Return True if the namepath exists on a known peer device.'''
-    return deployment_id in deployments \
+def peer_resource(deployment_id, module_name, function_name, filename, args) -> str | None:
+    '''Return redirection URL if the namepath exists on a known peer device.'''
+    if deployment_id in deployments \
         and module_name in deployments[deployment_id].peers \
         and function_name in deployments[deployment_id].peers[module_name] \
-        and len(deployments[deployment_id].peers[module_name][function_name]) > 0
+        and len(deployments[deployment_id].peers[module_name][function_name]) > 0 \
+    :
+        # NOTE: Selecting the first peer in order.
+        peer_url = deployments[deployment_id].peers[module_name][function_name][0] \
+            + (filename if filename else '')
+        query_string = '&'.join(f'{k}={v}' for k, v in args.items())
+        return f'{peer_url}?{query_string}'
 
 
 @bp.route('/<deployment_id>/')
@@ -541,14 +547,18 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
         return send_file(module_mount_path(module_name, filename))
 
     if not name_is_local(deployment_id, module_name, function_name):
-        if not name_is_peer(deployment_id, module_name, function_name):
-            return endpoint_failed(request, 'deployment does not exist', 404)
-        # NOTE: Selecting the first peer in order.
-        peer_url = deployments[deployment_id].peers[module_name][0] \
-            + f'/{function_name}' \
-            + (f'/{filename}' if filename else '')
-        # The function is on another device, so redirect caller there.
-        return redirect(peer_url)
+        if (peer_url := peer_resource(
+            deployment_id,
+            module_name,
+            function_name,
+            filename,
+            request.args,
+        )):
+            # The function is on another device, so redirect caller there.
+            # TODO: How to deal with same-origin policy?
+            return redirect(peer_url)
+
+        return endpoint_failed(request, 'resource does not exist', 404)
 
     # Write input data to filesystem.
     input_file_paths: Dict[str, str] = {}
@@ -584,6 +594,26 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
     # Return a link to this request's result (which could link further until
     # some useful value is found).
     return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
+
+
+@bp.route('/<deployment_id>/migrate/<module_name>', methods=['POST'])
+def evict_module(deployment_id, module_name):
+    '''
+    Request starting the process of moving a module away from this device to
+    another.
+    '''
+    if not name_is_local(deployment_id, module_name):
+        return endpoint_failed(request, 'module not found', 404)
+
+    deployment = deployments[deployment_id]
+    # Send migration-request to the deployment's original creator.
+    migration_url = deployment.orchestrator_address + f'migrate/{deployment_id}/{module_name}'
+    res = requests.post(migration_url, data={'from': FLASK_APP}, timeout=5)
+    if res.ok:
+        return jsonify({'status': 'success'})
+
+    return endpoint_failed(
+        request, f'migration failed on orchestrator at "{migration_url}": {str(res)}')
 
 
 @bp.route('/deploy/<deployment_id>', methods=['DELETE'])
@@ -631,6 +661,7 @@ def deployment_create():
     }
 
     deployments[data["deploymentId"]] = Deployment(
+        data["orchestratorApiBase"],
         data["deploymentId"],
         runtimes=modules_runtimes,
         _modules=module_configs,

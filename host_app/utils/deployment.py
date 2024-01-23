@@ -125,6 +125,7 @@ class Deployment:
     Describes how (HTTP) endpoints map to environment, parameters and execution of
     WebAssembly functions and vice versa.
     '''
+    orchestrator_address: str
     id: str # pylint: disable=invalid-name
     runtimes: dict[str, WasmRuntime]
     _modules: list[ModuleConfig]
