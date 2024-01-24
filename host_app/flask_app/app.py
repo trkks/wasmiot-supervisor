@@ -125,6 +125,7 @@ class RequestEntry():
     work_queued_at: datetime
     result: Any = None
     success: bool = False
+    redirected: bool = False
 
     def __post_init__(self):
         self.request_id = next_request_id(self.deployment_id, self.module_name, self.function_name)
@@ -569,20 +570,6 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
         # NOTE: Intented to use by __modules__, not e.g. end users.
         return send_file(module_mount_path(module_name, filename))
 
-    if not name_is_local(deployment_id, module_name, function_name):
-        if (peer_url := peer_resource(
-            deployment_id,
-            module_name,
-            function_name,
-            filename,
-            request.args,
-        )):
-            # The function is on another device, so redirect caller there.
-            # TODO: How to deal with same-origin policy?
-            return redirect(peer_url)
-
-        return endpoint_failed(request, 'resource does not exist', 404)
-
     # Write input data to filesystem.
     input_file_paths: Dict[str, str] = {}
     for param_name, input_data_file in request.files.items():
@@ -607,16 +594,70 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
         datetime.now()
     )
 
-    # Assume that the work wont take long and do it synchronously on GET.
-    if request.method.lower() == 'get':
-        make_history(entry)
-    else:
-        # Send data to worker thread to handle non-blockingly.
-        wasm_queue.put(entry)
+    if name_is_local(deployment_id, module_name, function_name):
+        # Assume that the work wont take long and do it synchronously on GET.
+        if request.method.lower() == 'get':
+            make_history(entry)
+        else:
+            # Send data to worker thread to handle non-blockingly.
+            wasm_queue.put(entry)
 
-    # Return a link to this request's result (which could link further until
-    # some useful value is found).
-    return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
+        # Return a link to this request's result (which could link further until
+        # some useful value is found).
+        return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
+
+    if (peer_url := peer_resource(
+        deployment_id,
+        module_name,
+        function_name,
+        filename,
+        request.args,
+    )):
+        # The function is on another device, so redirect caller there.
+
+        # NOTE: Just calling redirect(url) would be a bit nicer (client
+        # could connect to the actual server directly), but web browser
+        # prevents making calls to different hosts with Javascript. Calling
+        # the endpoint here at the server goes around the browser, but still
+        # we TODO should try to deal securely with same-origin policy...
+        
+        # FIXME: Hardcoded for redirecting camera-like redirects.
+        redirect_call = CallData(peer_url, {}, request.method.lower(), [])
+        resp = call_endpoint(redirect_call, module_name)
+        result = requests.get(resp.json()["resultUrl"], timeout=5).json()
+        img_stream = requests.get(result["result"][1][0], stream=True, timeout=10)
+        # Write the results to local and respond like it originated
+        # from this server in order to go around browser same-origin policy.
+
+        if img_stream.status_code == 200:
+            # Use the request directory as a quick hiding place.
+            thefile = "redirected_image.jpeg"
+            redirect_result_path = per_request_file_path(entry.request_id, thefile)
+            redirect_result_path.parent.mkdir(exist_ok=True, parents=True)
+            with open(redirect_result_path, 'wb') as f:
+                for chunk in img_stream:
+                    f.write(chunk)
+
+            entry.redirected = True
+            entry.success = True
+            entry.result = [
+                None,
+                [
+                    results_route(
+                        entry.request_id,
+                        full=True,
+                        file=thefile,
+                    )
+                ]
+            ]
+
+            request_history.append(entry)
+            return jsonify({
+                "resultUrl": results_route(entry.request_id, full=True)
+            })
+        raise Exception("redirect: image had not been captured yet")
+
+    return endpoint_failed(request, 'resource does not exist', 404)
 
 
 @bp.route('/<deployment_id>/migrate/<module_name>', methods=['POST'])
