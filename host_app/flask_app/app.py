@@ -99,6 +99,18 @@ def path_to_link(result: Any, request_id=None) -> Any:
     return result
 
 
+def next_request_id(deployment_id, module_name, function_name):
+    '''Generate a unique ID for a request'''
+    # TODO: Hash the ID (and include args and time as well) because in this
+    # current way multiple same requests get overwritten.
+    # - For now a simple request counter is used to distinguish requests for the same function
+    request_id = f'{deployment_id}:{module_name}:{function_name}'
+    if request_id not in request_id_counters:
+        request_id_counters[request_id] = request_counter()
+    request_id = f'{request_id}:{next(request_id_counters[request_id])}'
+    return request_id
+
+
 @dataclass
 class RequestEntry():
     '''Describes a request of WebAssembly execution'''
@@ -115,13 +127,8 @@ class RequestEntry():
     success: bool = False
 
     def __post_init__(self):
-        # TODO: Hash the ID (and include args and time as well) because in this
-        # current way multiple same requests get overwritten.
-        # - For now a simple request counter is used to distinguish requests for the same function
-        request_id = f'{self.deployment_id}:{self.module_name}:{self.function_name}'
-        if request_id not in request_id_counters:
-            request_id_counters[request_id] = request_counter()
-        self.request_id = f'{request_id}:{next(request_id_counters[request_id])}'
+        self.request_id = next_request_id(self.deployment_id, self.module_name, self.function_name)
+        
 
 request_history: list[RequestEntry] = []
 '''Log of all the requests handled by this supervisor'''
@@ -684,14 +691,19 @@ def deployment_create():
     # will only access their own directories.
 
     if data["deploymentId"] in deployments:
+        deployed_module_names = {m.name for m in module_configs}
         # NOTE: To handle migrations, keep the already existing module configurations intact.
         existing_module_names = {m.name for m in deployments[data["deploymentId"]].modules.values()}
         new_module_configs = filter(
             lambda x: x.name not in existing_module_names,
             module_configs
         )
-        old_module_configs = deployments[data["deploymentId"]]._modules
-        module_configs = list(new_module_configs) + old_module_configs
+        # Remove those old modules, that are _not_ in the new deployment.
+        old_module_configs = filter(
+            lambda x: x.name in deployed_module_names,
+            deployments[data["deploymentId"]]._modules
+        )
+        module_configs = list(new_module_configs) + list(old_module_configs)
 
     runtimes = {}
     for m in module_configs:
