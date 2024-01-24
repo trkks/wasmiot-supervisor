@@ -143,6 +143,34 @@ def per_request_file_path(request_id, mount_name):
     '''
     return Path(INSTANCE_OUTPUT_FOLDER, request_id, mount_name)
 
+
+def call_endpoint(call: CallData, module_name: str):
+    '''
+    Make the provided call (with possible input files from given module's
+    mounts) to another supervisor endpoint and return its response
+    '''
+    headers = call.headers
+    files = {
+        # NOTE: IIUC opening the files here matches how 'requests' documentation
+        # instructs to do for multi-file uploads, so I'm guessing it closes the
+        # opened files once done.
+        p.name: open(p, "rb")
+        for p
+        in map(
+            lambda x: module_mount_path(module_name, x.path),
+            call.files
+        )
+    }
+
+    resp = getattr(requests, call.method)(
+        call.url,
+        timeout=10,
+        files=files,
+        headers=headers,
+    )
+    return resp
+
+
 def do_wasm_work(entry: RequestEntry):
     '''
     Run a WebAssembly function and follow deployment instructions on what to
@@ -202,27 +230,9 @@ def do_wasm_work(entry: RequestEntry):
 
         return this_result
 
-    headers = next_call.headers
-    files = {
-        # NOTE: IIUC opening the files here matches how 'requests' documentation
-        # instructs to do for multi-file uploads, so I'm guessing it closes the
-        # opened files once done.
-        p.name: open(p, "rb")
-        for p
-        in map(
-            lambda x: module_mount_path(entry.module_name, x.path),
-            next_call.files
-        )
-    }
+    sub_resp = call_endpoint(next_call, entry.module_name)
+    return sub_resp.json()["resultUrl"]
 
-    sub_response = getattr(requests, next_call.method)(
-        next_call.url,
-        timeout=10,
-        files=files,
-        headers=headers,
-    )
-
-    return sub_response.json()["resultUrl"]
 
 def make_history(entry: RequestEntry):
     '''Add entry to request history after executing its work'''
@@ -442,7 +452,7 @@ def results_route(request_id=None, *, full=False, file=None):
         if is_main_script_execution:
             return request.root_url.removesuffix('/') \
                 + url_for(
-                    'debug-thingi.deployment_index',
+                    f'{FLASK_APP}.deployment_index',
                     deployment_id=did, request_id=request_id,
                 )
 
@@ -486,10 +496,15 @@ def name_is_local(deployment_id, module_name, function_name=None):
         # instance is needed.
 
 
+def peer_has_module(deployment_id, module_name):
+    '''Return True if some peer in deployment has the module.'''
+    return deployment_id in deployments \
+        and module_name in deployments[deployment_id].peers
+
+
 def peer_resource(deployment_id, module_name, function_name, filename, args) -> str | None:
     '''Return redirection URL if the namepath exists on a known peer device.'''
-    if deployment_id in deployments \
-        and module_name in deployments[deployment_id].peers \
+    if  peer_has_module(deployment_id, module_name) \
         and function_name in deployments[deployment_id].peers[module_name] \
         and len(deployments[deployment_id].peers[module_name][function_name]) > 0 \
     :
@@ -498,6 +513,7 @@ def peer_resource(deployment_id, module_name, function_name, filename, args) -> 
             + (filename if filename else '')
         query_string = '&'.join(f'{k}={v}' for k, v in args.items())
         return f'{peer_url}?{query_string}'
+    return None
 
 
 @bp.route('/<deployment_id>/')
@@ -602,13 +618,24 @@ def evict_module(deployment_id, module_name):
     Request starting the process of moving a module away from this device to
     another.
     '''
-    if not name_is_local(deployment_id, module_name):
+    if name_is_local(deployment_id, module_name):
+        logger.info('Requesting the eviction of module "%s" held locally', module_name)
+        device_to_evict_from = FLASK_APP
+    elif peer_has_module(deployment_id, module_name):
+        logger.info('Requesting the eviction of module "%s" from the peer device currently holding it', module_name)
+        # Let orchestrator find where the module currently is.
+        device_to_evict_from = None
+    else:
         return endpoint_failed(request, 'module not found', 404)
 
     deployment = deployments[deployment_id]
     # Send migration-request to the deployment's original creator.
     migration_url = deployment.orchestrator_address + f'migrate/{deployment_id}/{module_name}'
-    res = requests.post(migration_url, data={'from': FLASK_APP}, timeout=5)
+    res = requests.post(
+        migration_url,
+        data={'from': device_to_evict_from},
+        timeout=5,
+    )
     if res.ok:
         return jsonify({'status': 'success'})
 
@@ -655,15 +682,29 @@ def deployment_create():
     # deployment, adding filepath roots for the modules' directories that they
     # are able to use. This way when file-access is granted via runtime, modules
     # will only access their own directories.
-    modules_runtimes = {
-        m.name: WasmtimeRuntime([str(module_mount_path(m.name))])
-        for m in module_configs
-    }
+
+    if data["deploymentId"] in deployments:
+        # NOTE: To handle migrations, keep the already existing module configurations intact.
+        existing_module_names = {m.name for m in deployments[data["deploymentId"]].modules.values()}
+        new_module_configs = filter(
+            lambda x: x.name not in existing_module_names,
+            module_configs
+        )
+        old_module_configs = deployments[data["deploymentId"]]._modules
+        module_configs = list(new_module_configs) + old_module_configs
+
+    runtimes = {}
+    for m in module_configs:
+        # Do not re-initialize existing runtimes.
+        if data["deploymentId"] in deployments:
+            runtimes[m.name] = deployments[data["deploymentId"]].runtimes[m.name]
+        else:
+            runtimes[m.name] = WasmtimeRuntime([str(module_mount_path(m.name))])
 
     deployments[data["deploymentId"]] = Deployment(
         data["orchestratorApiBase"],
         data["deploymentId"],
-        runtimes=modules_runtimes,
+        runtimes=runtimes,
         _modules=module_configs,
         endpoints=data["endpoints"],
         _instructions=data["instructions"],
