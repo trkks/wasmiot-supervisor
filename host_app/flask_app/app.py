@@ -556,6 +556,32 @@ def deployment_index(deployment_id):
     return send_file(request_entry_path)
 
 
+def prepare_request_entry(deployment_id, module_name, function_name):
+    '''Prepare inputs and a request entry based on current request and given identifiers'''
+    # Write input data to filesystem.
+    input_file_paths: Dict[str, str] = {}
+    for param_name, input_data_file in request.files.items():
+        input_file_path = os.path.join(
+            current_app.config['PARAMS_FOLDER'],
+            (
+                input_data_file.name
+                if input_data_file is not None and input_data_file.name is not None
+                else ""
+            )
+        )
+        input_data_file.save(input_file_path)
+        input_file_paths[param_name] = str(Path(input_file_path))
+
+    return RequestEntry(
+        deployment_id,
+        module_name,
+        function_name,
+        request.method,
+        request.args,
+        input_file_paths,
+        datetime.now()
+    )
+
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
 @bp.route('/<deployment_id>/modules/<module_name>/<function_name>/<filename>', methods=["GET"])
 def run_module_function(deployment_id, module_name, function_name, filename=None):
@@ -569,100 +595,63 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
         # NOTE: Intented to use by __modules__, not e.g. end users.
         return send_file(module_mount_path(module_name, filename))
 
-    if not name_is_local(deployment_id, module_name, function_name):
-        if (peer_url := peer_resource(
-            deployment_id,
-            module_name,
-            function_name,
-            filename,
-            request.args,
-        )):
-            # The function is on another device, so redirect caller there.
-            # TODO: How to deal with same-origin policy?
-            return redirect(peer_url)
+    entry = prepare_request_entry(deployment_id, module_name, function_name)
 
-        return endpoint_failed(request, 'resource does not exist', 404)
+    if name_is_local(deployment_id, module_name, function_name):
+        # Assume that the work wont take long and do it synchronously on GET.
+        if request.method.lower() == 'get':
+            make_history(entry)
+        else:
+            # Send data to worker thread to handle non-blockingly.
+            wasm_queue.put(entry)
 
-    # Write input data to filesystem.
-    input_file_paths: Dict[str, str] = {}
-    for param_name, input_data_file in request.files.items():
-        input_file_path = os.path.join(
-            current_app.config['PARAMS_FOLDER'],
-            (
-                input_data_file.name
-                if input_data_file is not None and input_data_file.name is not None
-                else ""
-            )
-        )
-        input_data_file.save(input_file_path)
-        input_file_paths[param_name] = str(Path(input_file_path))
+        # Return a link to this request's result (which could link further until
+        # some useful value is found).
+        return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
 
-    entry = RequestEntry(
+    if (peer_url := peer_resource(
         deployment_id,
         module_name,
         function_name,
-        request.method,
+        filename,
         request.args,
-        input_file_paths,
-        datetime.now()
-    )
+    )): 
+        # TODO
+        raise NotImplementedError
 
-    # Assume that the work wont take long and do it synchronously on GET.
-    if request.method.lower() == 'get':
-        make_history(entry)
-    else:
-        # Send data to worker thread to handle non-blockingly.
-        wasm_queue.put(entry)
-
-    # Return a link to this request's result (which could link further until
-    # some useful value is found).
     return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
 
 
 @bp.route('/<deployment_id>/stream/modules/<module_name>/<function_name>', methods=["GET"])
 def stream_module_function(deployment_id, module_name, function_name):
     '''
-    Execute the function in WebAssembly module but always immediately return the
-    results in instead of linking to eventual result location.
-    '''
-    # Write input data to filesystem.
-    input_file_paths: Dict[str, str] = {}
-    for param_name, input_data_file in request.files.items():
-        input_file_path = os.path.join(
-            current_app.config['PARAMS_FOLDER'],
-            (
-                input_data_file.name
-                if input_data_file is not None and input_data_file.name is not None
-                else ""
-            )
-        )
-        input_data_file.save(input_file_path)
-        input_file_paths[param_name] = str(Path(input_file_path))
+    Execute the function in WebAssembly module but __immediately__ return the
+    results as a continuous byte stream instead of returning a link to the
+    eventual result location.
 
-    entry = RequestEntry(
-        deployment_id,
-        module_name,
-        function_name,
-        request.method,
-        request.args,
-        input_file_paths,
-        datetime.now()
-    )
+    TODO: Actually send a "stream" meaning a single user request is needed to
+    initiate continouous calls of the same WebAssembly work.
+    '''
+    entry = prepare_request_entry(deployment_id, module_name, function_name)
 
     if name_is_local(deployment_id, module_name, function_name):
         # Assume that the work wont take long and do it synchronously on GET.
         make_history(entry)
         primitive, files = entry.result
-        if len(files) == 1:
-            file = per_request_file_path(entry.request_id, files[0].path)
+
+        # Concat all the outputs into a single byte stream with primitives first
+        # and files second (in whatever order they come out in).
+        data = bytearray([primitive])
+
+        for mount in files:
+            file = per_request_file_path(entry.request_id, mount.path)
             with open(file, 'rb') as f:
                 content = f.read()
-            data = bytearray([primitive])
-            data += content
-            return Response(bytes(data), mimetype='application/octet-stream')
+                data += content
+
+        return Response(bytes(data), mimetype='application/octet-stream')
 
     return endpoint_failed(request, 'resource does not exist', 404)
-
 
 
 @bp.route('/<deployment_id>/migrate/<module_name>', methods=['POST'])
