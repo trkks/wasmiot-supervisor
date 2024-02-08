@@ -15,7 +15,7 @@ import threading
 from typing import Any, Dict, Generator, Tuple
 
 import atexit
-from flask import Flask, Blueprint, jsonify, current_app, request, send_file, redirect, url_for
+from flask import Flask, Blueprint, jsonify, current_app, request, send_file, redirect, url_for, Response
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
 # TODO: Use this whenever doing file I/O:
@@ -243,7 +243,7 @@ def do_wasm_work(entry: RequestEntry):
 
 
 def make_history(entry: RequestEntry):
-    '''Add entry to request history after executing its work'''
+    '''Add results of execution of work to the entry and then append it to request history.'''
     try:
         entry.result = do_wasm_work(entry)
         entry.success = True
@@ -557,19 +557,8 @@ def deployment_index(deployment_id):
     return send_file(request_entry_path)
 
 
-@bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
-@bp.route('/<deployment_id>/modules/<module_name>/<function_name>/<filename>', methods=["GET"])
-def run_module_function(deployment_id, module_name, function_name, filename=None):
-    '''
-    Execute the function in WebAssembly module and act based on instructions
-    attached to the deployment of this call/execution.
-    '''
-
-    if filename:
-        # If a filename is passed, this route works merely for file serving.
-        # NOTE: Intented to use by __modules__, not e.g. end users.
-        return send_file(module_mount_path(module_name, filename))
-
+def prepare_request_entry(deployment_id, module_name, function_name):
+    '''Prepare inputs and a request entry based on current request and given identifiers'''
     # Write input data to filesystem.
     input_file_paths: Dict[str, str] = {}
     for param_name, input_data_file in request.files.items():
@@ -584,7 +573,7 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
         input_data_file.save(input_file_path)
         input_file_paths[param_name] = str(Path(input_file_path))
 
-    entry = RequestEntry(
+    return RequestEntry(
         deployment_id,
         module_name,
         function_name,
@@ -593,6 +582,21 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
         input_file_paths,
         datetime.now()
     )
+
+@bp.route('/<deployment_id>/modules/<module_name>/<function_name>', methods=["GET", "POST"])
+@bp.route('/<deployment_id>/modules/<module_name>/<function_name>/<filename>', methods=["GET"])
+def run_module_function(deployment_id, module_name, function_name, filename=None):
+    '''
+    Execute the function in WebAssembly module and act based on instructions
+    attached to the deployment of this call/execution.
+    '''
+
+    if filename:
+        # If a filename is passed, this route works merely for file serving.
+        # NOTE: Intented to use by __modules__, not e.g. end users.
+        return send_file(module_mount_path(module_name, filename))
+
+    entry = prepare_request_entry(deployment_id, module_name, function_name)
 
     if name_is_local(deployment_id, module_name, function_name):
         # Assume that the work wont take long and do it synchronously on GET.
@@ -656,6 +660,38 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
                 "resultUrl": results_route(entry.request_id, full=True)
             })
         raise Exception("redirect: image had not been captured yet")
+
+    return endpoint_failed(request, 'resource does not exist', 404)
+
+
+@bp.route('/<deployment_id>/stream/modules/<module_name>/<function_name>', methods=["GET"])
+def stream_module_function(deployment_id, module_name, function_name):
+    '''
+    Execute the function in WebAssembly module but __immediately__ return the
+    results as a continuous byte stream instead of returning a link to the
+    eventual result location.
+
+    TODO: Actually send a "stream" meaning a single user request is needed to
+    initiate continouous calls of the same WebAssembly work.
+    '''
+    entry = prepare_request_entry(deployment_id, module_name, function_name)
+
+    if name_is_local(deployment_id, module_name, function_name):
+        # Assume that the work wont take long and do it synchronously on GET.
+        make_history(entry)
+        primitive, files = entry.result
+
+        # Concat all the outputs into a single byte stream with primitives first
+        # and files second (in whatever order they come out in).
+        data = bytearray([primitive])
+
+        for mount in files:
+            file = per_request_file_path(entry.request_id, mount.path)
+            with open(file, 'rb') as f:
+                content = f.read()
+                data += content
+
+        return Response(bytes(data), mimetype='application/octet-stream')
 
     return endpoint_failed(request, 'resource does not exist', 404)
 
