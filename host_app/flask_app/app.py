@@ -15,7 +15,7 @@ import threading
 from typing import Any, Dict, Generator, Tuple
 
 import atexit
-from flask import Flask, Blueprint, jsonify, current_app, request, send_file, redirect, url_for
+from flask import Flask, Blueprint, jsonify, current_app, request, send_file, redirect, url_for, Response
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
 # TODO: Use this whenever doing file I/O:
@@ -242,7 +242,7 @@ def do_wasm_work(entry: RequestEntry):
 
 
 def make_history(entry: RequestEntry):
-    '''Add entry to request history after executing its work'''
+    '''Add results of execution of work to the entry and then append it to request history.'''
     try:
         entry.result = do_wasm_work(entry)
         entry.success = True
@@ -617,6 +617,52 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
     # Return a link to this request's result (which could link further until
     # some useful value is found).
     return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
+
+
+@bp.route('/<deployment_id>/stream/modules/<module_name>/<function_name>', methods=["GET"])
+def stream_module_function(deployment_id, module_name, function_name):
+    '''
+    Execute the function in WebAssembly module but always immediately return the
+    results in instead of linking to eventual result location.
+    '''
+    # Write input data to filesystem.
+    input_file_paths: Dict[str, str] = {}
+    for param_name, input_data_file in request.files.items():
+        input_file_path = os.path.join(
+            current_app.config['PARAMS_FOLDER'],
+            (
+                input_data_file.name
+                if input_data_file is not None and input_data_file.name is not None
+                else ""
+            )
+        )
+        input_data_file.save(input_file_path)
+        input_file_paths[param_name] = str(Path(input_file_path))
+
+    entry = RequestEntry(
+        deployment_id,
+        module_name,
+        function_name,
+        request.method,
+        request.args,
+        input_file_paths,
+        datetime.now()
+    )
+
+    if name_is_local(deployment_id, module_name, function_name):
+        # Assume that the work wont take long and do it synchronously on GET.
+        make_history(entry)
+        primitive, files = entry.result
+        if len(files) == 1:
+            file = per_request_file_path(entry.request_id, files[0].path)
+            with open(file, 'rb') as f:
+                content = f.read()
+            data = bytearray([primitive])
+            data += content
+            return Response(bytes(data), mimetype='application/octet-stream')
+
+    return endpoint_failed(request, 'resource does not exist', 404)
+
 
 
 @bp.route('/<deployment_id>/migrate/<module_name>', methods=['POST'])
