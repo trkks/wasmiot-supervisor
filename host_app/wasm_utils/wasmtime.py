@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import os
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Callable
 
 from wasmtime import (
     Config, Engine, Func, FuncType, Instance, Linker, Memory, Module,
@@ -146,9 +146,19 @@ class WasmtimeRuntime(WasmRuntime):
             f"WebAssembly memory at address ({address}): {error_str}"
         )
 
+    def link_rpc_m2m(self, strategy):
+        self.m2m = strategy
+
+        communication = "communication"
+
+        i32: ValType = ValType.i32()
+
+        # communication
+        rpc_call = RpcCall(self).function
+        self.linker.define_func(communication, "rpc", FuncType([i32, i32, i32, i32, i32, i32], [i32]), rpc_call)
+
     def _link_remote_functions(self) -> None:
         sys = "sys"
-        communication = "communication"
         dht = "dht"
         camera = "camera"
 
@@ -161,10 +171,6 @@ class WasmtimeRuntime(WasmRuntime):
         self.linker.define_func(sys, "print", FuncType([i32, i32], []), Print(self).function)
         self.linker.define_func(sys, "println", FuncType([i32], []), python_println)
         self.linker.define_func(sys, "printInt", FuncType([i32], []), python_print_int)
-
-        # communication
-        rpc_call = RpcCall(self).function
-        self.linker.define_func(communication, "rpcCall", FuncType([i32, i32, i32, i32], []), rpc_call)
 
         # peripheral
         take_image_dynamic_size = TakeImageDynamicSize(self).function

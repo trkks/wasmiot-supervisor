@@ -1,6 +1,7 @@
 """General utilities for Wasm."""
 
 import os
+import logging
 import platform
 import struct
 from time import sleep, time
@@ -9,13 +10,14 @@ from typing import Any, Callable
 import cv2
 import requests
 
-from host_app.utils.configuration import remote_functions
 from host_app.wasm_utils.wasm_api import WasmRuntime
 
 if platform.system() != "Windows":
     import adafruit_dht
     import board
 
+FLASK_APP = os.environ["FLASK_APP"]
+logger = logging.getLogger(FLASK_APP)
 
 class RemoteFunction:
     """Superclass for remote function generator."""
@@ -186,33 +188,43 @@ class TakeImageStaticSize(RemoteFunction):
 class RpcCall(RemoteFunction):
     """Remote function generator for RPC calls."""
     @property
-    def function(self) -> Callable[[int, int, int, int], None]:
-        """Make a POST request with data.
-        Both the data and the target host is determined from the runtime memory."""
-        def python_rpc_call(func_name_ptr: int, func_name_size: int,
-                            data_ptr: int, data_size: int) -> None:
+    def function(self) -> Callable[[int, int, int, int, int, int], int]:
+        """Make a request to another host's module with data.
+        The data is determined from the runtime memory and target host from this WasmRuntime's m2m strategy."""
+        def python_rpc_call( #pylint: disable=too-many-arguments
+            module_name_ptr: int, module_name_size: int,
+            func_name_ptr: int, func_name_size: int,
+            data_ptr: int, data_size: int,
+        ) -> int:
+            module_name_bytes, error = self.runtime.read_from_memory(module_name_ptr, module_name_size, self.runtime.current_module_name)
+            if error is not None:
+                logger.error("RPC module name error: %r", error)
+                return 1
             func_name_bytes, error = self.runtime.read_from_memory(func_name_ptr, func_name_size, self.runtime.current_module_name)
             if error is not None:
-                print(error)
-                return
-            func_name = func_name_bytes.decode()
-            print(func_name)
-            func = remote_functions[func_name]
-            data, error = self.runtime.read_from_memory(data_ptr, data_size, self.runtime.current_module_name)
-            if error is not None:
-                print(error)
-                return
-            files = [("img", data)]
+                logger.error("RPC function name error: %r", error)
+                return 1
 
-            response = requests.post(
-                url=func["host"],
-                files=files,
-                timeout=120
-            )
-            print(response.text)
+            input_data, error = self.runtime.read_from_memory(data_ptr, data_size, self.runtime.current_module_name)
+            if error is not None:
+                logger.error("RPC input data error: %r", error)
+                return 1
+
+            module_name = module_name_bytes.decode()
+            func_name = func_name_bytes.decode()
+            logger.info("Performing RPC: %r/%r", module_name, func_name)
+
+            rpc_result = self.runtime.m2m(module_name, func_name, input_data)
+            logger.info("RPC responded with: %r", str(rpc_result))
+
+            # Write result into caller's memory if there is anything to write.
+            if data_size > 0:
+                self.runtime.write_to_memory(data_ptr, rpc_result[1])
+            
+            # Return success-code.
+            return 0
 
         return python_rpc_call
-
 
 class RandomGet(RemoteFunction):
     """Remote function generator for writing random bytes to runtime memory."""

@@ -27,6 +27,10 @@ class WasmRuntime:
         self._functions: Optional[Dict[str, WasmModule]] = None
         self._current_module_name: Optional[str] = None
 
+    def link_rpc_m2m(self, strategy: Callable[[str, str, bytes], Tuple[int, bytes]]):
+        """Link a strategy function to the runtime for M2M communication in an RPC"""
+        raise NotImplementedError
+
     @property
     def modules(self) -> Dict[str, WasmModule]:
         """Get the modules loaded in the Wasm runtime."""

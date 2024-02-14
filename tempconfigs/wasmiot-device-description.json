@@ -16,7 +16,7 @@
         "print",
         "println",
         "printInt",
-        "rpcCall",
+        "rpc",
         "takeImage",
         "fd_write",
         "random_get",
