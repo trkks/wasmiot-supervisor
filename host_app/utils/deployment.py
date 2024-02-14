@@ -89,7 +89,7 @@ class Deployment:
         # Endpoints:
         for module_name, functions in self.endpoints.items():
             for function_name, endpoint in functions.items():
-                self.endpoints[module_name][function_name] = Endpoint(**endpoint)
+                functions[function_name] = Endpoint(**endpoint)
         # Mounts:
         self.mounts = {}
         for module_name, functions in self._mounts.items():
@@ -100,6 +100,13 @@ class Deployment:
                     # NOTE: There might be duplicate paths in the mounts.
                     self.mounts[module_name][function_name][MountStage(stage)] = \
                         [MountPathFile(**mount) for mount in mounts]
+        # Peers:
+        for module_name, functions in self.peers.items():
+            for function_name, endpoints in functions.items():
+                endpoints_ = []
+                for endpoint in endpoints:
+                    endpoints_.append(Endpoint(**endpoint))
+                functions[function_name] = endpoints_
 
         # Build how function calls are chained or linked to each other across
         # endpoints and other devices.
@@ -115,6 +122,19 @@ class Deployment:
             for function_name, link in functions.items():
                 self.instructions.modules[module_name][function_name] = \
                     FunctionLink(from_=link["from"], to=link["to"])
+
+        # Add M2M functionality based on this deployment's nodes for supporting RPC inside modules.
+        for mname in self.modules.keys():
+            self.runtimes[mname].link_rpc_m2m(self.m2m())
+
+    def m2m(self) -> Callable[[str, str, bytes], Tuple[int, bytes]]:
+        '''Return a callback that uses peer-information in this deployment to make a request to another device and interpret its file-result as bytes.'''
+        def function(module: str, func: str, input_data: bytes) -> Tuple[int, bytes]:
+            resp = self.remote_call(module, func, input_data)
+            # TODO: Make the sub-request and read bytes from that response.
+            return (0, bytes(resp.content))
+
+        return function
 
     def _next_target(self, module_name, function_name) -> Endpoint | None:
         '''
@@ -200,6 +220,44 @@ class Deployment:
                         mountpath.write(datapath.read())
             else:
                 print('File already at mount location:', host_path)
+    
+
+    def remote_call(
+        self,
+        module_name,
+        function_name,
+        input_data: bytes,
+    ):
+        '''
+        Call a peer's module's function with input data and return the response.
+
+        NOTE: Only a list of bytes is supported as the callable  function's
+        input!
+        '''
+        # The call is _remote_ so it must be on a peer, not locally on this device.
+        target_endpoint = self.peers[module_name][function_name][0]
+
+        # Find the file(name) that the target endpoint expects.
+        # TODO: Should separate between file stages, but endpoint 
+        # does not contain that info. HARDCODED TO SECOND ELEMENT!
+        props_iter = iter(target_endpoint.request.request_body.schema.properties.keys())
+        next(props_iter, None) # Skip first.
+        input_mount_path = next(props_iter, None)
+
+        input_files = {input_mount_path: io.BytesIO(input_data)} \
+            if input_mount_path is not None \
+            else {}
+        # Use the CallData here just to skip some manual steps.
+        call = CallData.from_endpoint(target_endpoint)
+        resp = getattr(requests, target_endpoint.method)(
+            call.url,
+            timeout=10,
+            files=input_files,
+            headers=call.headers,
+        )
+
+        return resp
+
 
     def prepare_for_running(
         self,
