@@ -1,84 +1,25 @@
 '''
-This module defines the Deployment and CallData classes.
+This module defines the Deployment class.
 - Deployment interprets the instructions for how to link two WebAssembly functions together.
-- CallData contains the data needed for then actually calling a remote function's endpoint.
 '''
 
+import io
 from dataclasses import dataclass, field
-from functools import reduce
 from itertools import chain
 import json
 from pathlib import Path
-from typing import Any, Dict, Tuple, Set
+from typing import Any, Dict, Tuple, Set, Callable
+
+import requests
 
 from host_app.wasm_utils.wasm_api import ModuleConfig, WasmModule, WasmRuntime, WasmType
 from host_app.utils import FILE_TYPES
+from host_app.utils.call import CallData, EndpointArgs, EndpointData
 from host_app.utils.endpoint import EndpointResponse, Endpoint, Schema, SchemaType
 from host_app.utils.mount import MountStage, MountPathFile
 
 
-EndpointArgs = str | list[str] | dict[str, Any] | None
-EndpointData = list[MountPathFile] | None
-"""List of mount names that the module defines as outputs of a ran function"""
 EndpointOutput = Tuple[EndpointArgs, EndpointData]
-
-
-@dataclass
-class CallData:
-    '''Endpoint with matching arguments and other request data (files)'''
-    url: str
-    headers: dict[str, str]
-    method: str
-    files: list[str] | None
-
-    @classmethod
-    def from_endpoint(
-        cls,
-        endpoint: Endpoint,
-        args: EndpointArgs = None,
-        files: EndpointData = None
-    ):
-        '''
-        Fill in the parameters and input for an endpoint with arguments and
-        data.
-        '''
-
-        # TODO: Fill in URL path.
-        target_url = endpoint.url.rstrip('/') + endpoint.path
-
-        # Fill in URL query.
-        if args:
-            if isinstance(args, str):
-                # Add the single parameter to the query.
-
-                # NOTE: Only one parameter is supported for now (WebAssembly currently
-                # does not seem to support tuple outputs (easily)). Also path should
-                # have been already filled and provided in the deployment phase.
-                param_name = endpoint.request.parameters[0]["name"]
-                param_value = args
-                query = f'?{param_name}={param_value}'
-            elif isinstance(args, list):
-                # Build the query in order.
-                query = reduce(
-                    lambda acc, x: f'{acc}&{x[0]}={x[1]}',
-                    zip(map(lambda y: y["name"], endpoint.request.parameters), args),
-                    '?'
-                )
-            elif isinstance(args, dict):
-                # Build the query based on matching names.
-                query = reduce(
-                    lambda acc, x: f'{acc}&{x[0]}={x[1]}',
-                    ((str(y["name"]), args[str(y["name"])]) for y in endpoint.parameters),
-                    '?'
-                )
-            else:
-                raise NotImplementedError(f'Unsupported parameter type "{type(args)}"')
-
-            target_url += query
-
-        headers = {}
-
-        return cls(target_url, headers, endpoint.method, files or {})
 
 @dataclass
 class FunctionLink:
@@ -128,12 +69,12 @@ class Deployment:
     orchestrator_address: str
     id: str # pylint: disable=invalid-name
     runtimes: dict[str, WasmRuntime]
-    _modules: list[ModuleConfig]
     endpoints: ModuleEndpointMap
+    peers: ModuleEndpointMap
+    '''Mapping to lists of peer-device execution URLs'''
+    _modules: list[ModuleConfig]
     _instructions: dict[str, Any]
     _mounts: dict[str, Any]
-    peers: dict[str, list[str]]
-    '''Mapping to lists of peer-device execution URLs'''
     modules: dict[str, ModuleConfig] = field(init=False)
     instructions: Instructions = field(init=False)
     mounts: ModuleMountMap = field(init=False)
@@ -275,9 +216,6 @@ class Deployment:
         The result tuple will contain
             1. The instantiated module.
             2. Ordered arguments for the function.
-
-        :param app_context_module_mount_path: Function for getting the path to
-        module's mount path based on Flask app's config.
         '''
         # Initialize the module.
         module_config = self.modules[module_name]

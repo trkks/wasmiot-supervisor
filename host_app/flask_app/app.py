@@ -29,8 +29,9 @@ from host_app.wasm_utils.wasmtime import WasmtimeRuntime
 
 from host_app.utils.configuration import get_device_description, get_wot_td
 from host_app.utils.routes import endpoint_failed
-from host_app.utils.deployment import Deployment, CallData
+from host_app.utils.deployment import Deployment
 from host_app.utils.mount import MountPathFile
+from host_app.utils.call import CallData, call_endpoint
 
 
 _MODULE_DIRECTORY = 'wasm-modules'
@@ -149,34 +150,6 @@ def per_request_file_path(request_id, mount_name):
     Return the file path where output-mounts are saved identified by request.
     '''
     return Path(INSTANCE_OUTPUT_FOLDER, request_id, mount_name)
-
-
-def call_endpoint(call: CallData, module_name: str):
-    '''
-    Make the provided call (with possible input files from given module's
-    mounts) to another supervisor endpoint and return its response
-    '''
-    headers = call.headers
-    files = {
-        # NOTE: IIUC opening the files here matches how 'requests' documentation
-        # instructs to do for multi-file uploads, so I'm guessing it closes the
-        # opened files once done.
-        p.name: open(p, "rb")
-        for p
-        in map(
-            lambda x: module_mount_path(module_name, x.path),
-            call.files
-        )
-    }
-
-    resp = getattr(requests, call.method)(
-        call.url,
-        timeout=10,
-        files=files,
-        headers=headers,
-    )
-    return resp
-
 
 def do_wasm_work(entry: RequestEntry):
     '''
@@ -637,6 +610,8 @@ def stream_module_function(deployment_id, module_name, function_name):
     if name_is_local(deployment_id, module_name, function_name):
         # Assume that the work wont take long and do it synchronously on GET.
         make_history(entry)
+        if not entry.success:
+            return endpoint_failed(request, "failure running Wasm:" + entry.result)
         primitive, files = entry.result
 
         # Concat all the outputs into a single byte stream with primitives first
@@ -752,11 +727,11 @@ def deployment_create():
         data["orchestratorApiBase"],
         data["deploymentId"],
         runtimes=runtimes,
-        _modules=module_configs,
         endpoints=data["endpoints"],
+        peers=data["peers"],
+        _modules=module_configs,
         _instructions=data["instructions"],
         _mounts=data["mounts"],
-        peers=data["peers"],
     )
 
     # If the fetching did not fail (that is, crash), return success.
