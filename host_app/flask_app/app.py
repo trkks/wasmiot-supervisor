@@ -521,12 +521,16 @@ def deployment_index(deployment_id):
     if not entry.success:
         return endpoint_failed(request, f'index function had failed: "{entry.result}"', 500)
 
-    output_mount = entry.result[1][0]
-    output_mount_path = module_mount_path(entry.module_name, output_mount.path)
-    request_entry_path = per_request_file_path(entry.request_id, output_mount_path.name)
+    if entry.result[1] is not None:
+        output_mount = entry.result[1][0]
+        output_mount_path = module_mount_path(entry.module_name, output_mount.path)
+        request_entry_path = per_request_file_path(entry.request_id, output_mount_path.name)
 
-    # Respond with the found index page.
-    return send_file(request_entry_path)
+        # Respond with the (assumed) index page.
+        return send_file(request_entry_path)
+    else:
+        # Respond with the result of execution.
+        return jsonify(entry.result[0])
 
 
 def prepare_request_entry(deployment_id, module_name, function_name):
