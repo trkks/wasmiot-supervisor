@@ -9,6 +9,7 @@ from itertools import chain
 import json
 from pathlib import Path
 from typing import Any, Dict, Tuple, Set, Callable
+import struct
 
 import requests
 
@@ -130,9 +131,20 @@ class Deployment:
     def m2m(self) -> Callable[[str, str, bytes], Tuple[int, bytes]]:
         '''Return a callback that uses peer-information in this deployment to make a request to another device and interpret its file-result as bytes.'''
         def function(module: str, func: str, input_data: bytes) -> Tuple[int, bytes]:
-            resp = self.remote_call(module, func, input_data)
-            # TODO: Make the sub-request and read bytes from that response.
-            return (0, bytes(resp.content))
+            first_resp = self.remote_call(module, func, input_data)
+            resp = first_resp.json()
+            if isinstance(resp, (list, tuple)):
+                # The result was returned immediately.
+                primitive_content, file_content = resp
+            elif isinstance(resp, dict):
+                # Otherwise the result needs to be queried (when it's finished).
+                result_url = resp["resultUrl"]
+                sub_result = requests.get(result_url, timeout=10)
+                primitive_content, file_urls = sub_result.json()["result"]
+                # TODO: Fetch and concatenate all the output files.
+                file_content = requests.get(file_urls[0], timeout=10).content
+
+            return (primitive_content, bytes(file_content))
 
         return function
 
@@ -234,25 +246,49 @@ class Deployment:
         NOTE: Only a list of bytes is supported as the callable  function's
         input!
         '''
-        # The call is _remote_ so it must be on a peer, not locally on this device.
-        target_endpoint = self.peers[module_name][function_name][0]
+        # Try local endpoint first, as it would be faster.
+        local_endpoint = self.endpoints \
+            .get(module_name, {}) \
+            .get(function_name, None)
+        if local_endpoint is None:
+            # Try remote instead.
+            remote_endpoint = self.peers \
+                .get(module_name, {}) \
+                .get(function_name, [None])[0]
+            if remote_endpoint is None:
+                raise RuntimeError(f"RPC '{module_name}/{function_name}'does not exist")
+            target_endpoint = remote_endpoint
+        else:
+            target_endpoint = local_endpoint
 
-        # Find the file(name) that the target endpoint expects.
-        # TODO: Should separate between file stages, but endpoint 
-        # does not contain that info. HARDCODED TO SECOND ELEMENT!
-        props_iter = iter(target_endpoint.request.request_body.schema.properties.keys())
-        next(props_iter, None) # Skip first.
-        input_mount_path = next(props_iter, None)
+        # Pass possible input.
+        input_args, input_files = None, None
+        if len(target_endpoint.request.parameters) > 0:
+            input_args = {}
+            int32s = (input_data[i:i+4] for i in range(0, len(input_data), 4))
+            for param, arg in zip(target_endpoint.request.parameters, int32s):
+                # TODO: Instead of assuming the bytes are 4-byte unsigned integers,
+                # interpret the type from attached schema.
+                input_args[param["name"]] = struct.unpack("<I", arg)[0]
+        if target_endpoint.request.request_body is not None:
+            # Find the possible input file(name) that the target endpoint expects.
 
-        input_files = {input_mount_path: io.BytesIO(input_data)} \
-            if input_mount_path is not None \
-            else {}
+            # TODO: Should separate between file stages, but endpoint 
+            # does not contain that info. HARDCODED TO SECOND ELEMENT!
+            props_iter = iter(target_endpoint.request.request_body.schema.properties.keys())
+            next(props_iter, None) # Skip first.
+            input_mount_path = next(props_iter, None)
+
+            input_files = {input_mount_path: io.BytesIO(input_data)} \
+                if input_mount_path is not None \
+                else {}
+
         # Use the CallData here just to skip some manual steps.
-        call = CallData.from_endpoint(target_endpoint)
+        call = CallData.from_endpoint(target_endpoint, input_args, files=input_files)
         resp = getattr(requests, target_endpoint.method)(
             call.url,
             timeout=10,
-            files=input_files,
+            files=call.files,
             headers=call.headers,
         )
 

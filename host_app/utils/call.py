@@ -59,7 +59,7 @@ class CallData:
                 # Build the query based on matching names.
                 query = reduce(
                     lambda acc, x: f'{acc}&{x[0]}={x[1]}',
-                    ((str(y["name"]), args[str(y["name"])]) for y in endpoint.parameters),
+                    ((str(y["name"]), args[str(y["name"])]) for y in endpoint.request.parameters),
                     '?'
                 )
             else:

@@ -8,7 +8,6 @@ from time import sleep, time
 from typing import Any, Callable
 
 import cv2
-import requests
 
 from host_app.wasm_utils.wasm_api import WasmRuntime
 
@@ -214,12 +213,19 @@ class RpcCall(RemoteFunction):
             func_name = func_name_bytes.decode()
             logger.info("Performing RPC: %r/%r", module_name, func_name)
 
-            rpc_result = self.runtime.m2m(module_name, func_name, input_data)
-            logger.info("RPC responded with: %r", str(rpc_result))
+            rpc_primitive, rpc_file = self.runtime.m2m(module_name, func_name, input_data)
+            logger.info(
+                "RPC responded with: %r and %r",
+                str(rpc_primitive),
+                f"{len(rpc_file)} bytes" \
+                if len(rpc_file) > 64 \
+                else rpc_file
+            )
 
             # Write result into caller's memory if there is anything to write.
+            # TODO: Write primitives as well
             if data_size > 0:
-                self.runtime.write_to_memory(data_ptr, rpc_result[1])
+                self.runtime.write_to_memory(data_ptr, rpc_file)
             
             # Return success-code.
             return 0
