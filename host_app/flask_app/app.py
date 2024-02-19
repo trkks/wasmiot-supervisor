@@ -169,10 +169,17 @@ def do_wasm_work(entry: RequestEntry):
         entry.request_args,
         entry.request_files
     )
+    # Force other callers to this module to wait.
+    if not hasattr(module, 'lock'):
+        module.lock = threading.Lock()
+    module.lock.acquire()
 
     logger.debug("Running Wasm function %r", entry.function_name)
     raw_output = module.run_function(entry.function_name, wasm_args)
     logger.debug("... Result: %r", raw_output, extra={"raw_output": raw_output})
+
+    # Release the module immediately once its used.
+    module.lock.release()
 
     # Do the next call, passing chain along and return immediately (i.e. the
     # answer to current request should not be such, that it significantly blocks
