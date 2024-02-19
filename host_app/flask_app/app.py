@@ -496,8 +496,8 @@ def peer_resource(deployment_id, module_name, function_name, filename, args) -> 
         and len(deployments[deployment_id].peers[module_name][function_name]) > 0 \
     :
         # NOTE: Selecting the first peer in order.
-        peer_url = deployments[deployment_id].peers[module_name][function_name][0] \
-            + (filename if filename else '')
+        peer = deployments[deployment_id].peers[module_name][function_name][0]
+        peer_url = peer.url + peer.path + '/' + (filename if filename else '')
         query_string = '&'.join(f'{k}={v}' for k, v in args.items())
         return f'{peer_url}?{query_string}'
     return None
