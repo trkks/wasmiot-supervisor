@@ -4,14 +4,17 @@ This module defines the Deployment class.
 '''
 
 import io
+import os
 from dataclasses import dataclass, field
 from itertools import chain
 import json
+import logging
 from pathlib import Path
-from typing import Any, Dict, Tuple, Set, Callable
+from typing import Any, Dict, Tuple, Set
 import struct
 
 import requests
+from wasmtime import WasmtimeError
 
 from host_app.wasm_utils.wasm_api import ModuleConfig, WasmModule, WasmRuntime, WasmType
 from host_app.utils import FILE_TYPES
@@ -19,6 +22,9 @@ from host_app.utils.call import CallData, EndpointArgs, EndpointData
 from host_app.utils.endpoint import EndpointResponse, Endpoint, Schema, SchemaType
 from host_app.utils.mount import MountStage, MountPathFile
 
+
+FLASK_APP = os.environ["FLASK_APP"]
+logger = logging.getLogger(FLASK_APP)
 
 EndpointOutput = Tuple[EndpointArgs, EndpointData]
 
@@ -126,27 +132,63 @@ class Deployment:
 
         # Add M2M functionality based on this deployment's nodes for supporting RPC inside modules.
         for mname in self.modules.keys():
-            self.runtimes[mname].link_rpc_m2m(self.m2m())
+            try:
+                self.runtimes[mname].link_rpc_m2m(self.m2m)
+            except WasmtimeError as wer:
+                logger.info("Ignoring error in linking M2M to module %r:  %r", mname, wer)
 
-    def m2m(self) -> Callable[[str, str, bytes], Tuple[int, bytes]]:
-        '''Return a callback that uses peer-information in this deployment to make a request to another device and interpret its file-result as bytes.'''
-        def function(module: str, func: str, input_data: bytes) -> Tuple[int, bytes]:
-            first_resp = self.remote_call(module, func, input_data)
-            resp = first_resp.json()
-            if isinstance(resp, (list, tuple)):
-                # The result was returned immediately.
-                primitive_content, file_content = resp
-            elif isinstance(resp, dict):
-                # Otherwise the result needs to be queried (when it's finished).
-                result_url = resp["resultUrl"]
+        # Initialize all modules so they are ready and serialized for execution.
+        for module_name, module_config in self.modules.items():
+            module = self.runtimes[module_name].get_or_load_module(module_config)
+            if module is None:
+                raise RuntimeError("Wasm module could not be loaded!")
+
+    def m2m(
+        self,
+        module_name,
+        function_name,
+        input_data: bytes,
+        args: list[int]=[],
+    ) -> Tuple[int, bytes]:
+        '''
+        Use peer-information in this deployment to make a request to another
+        device and interpret its file-result as bytes.
+
+        Any possible 32-bit integer WebAssembly function arguments are prepended to input_data.
+        '''
+        arg_bytes = bytearray()
+        for arg in args:
+            arg_bytes += struct.pack("<I", arg)
+        input_data = arg_bytes + input_data
+        first_resp = self._remote_procedure_call(module_name, function_name, input_data)
+        resp = first_resp.json()
+        if isinstance(resp, (list, tuple)):
+            # The result was returned immediately.
+            primitive_content, file_content = resp
+        elif isinstance(resp, dict):
+            # Otherwise the result needs to be queried (when it's finished).
+            result_url = resp["resultUrl"]
+            sub_result = None
+            primitive_content, file_urls = None, None
+            # Try a couple times, waiting for the result to be ready
+            for _ in range(3):
                 sub_result = requests.get(result_url, timeout=10)
-                primitive_content, file_urls = sub_result.json()["result"]
-                # TODO: Fetch and concatenate all the output files.
-                file_content = requests.get(file_urls[0], timeout=10).content
+                try:
+                    json_ = sub_result.json()
+                    primitive_content, file_urls = json_["result"]
+                    break
+                except ValueError:
+                    pass
+            else:
+                logger.error("Failed result queries (last: %r)", sub_result)
+                raise RuntimeError("M2M failed")
+            # TODO: Fetch and concatenate all the output files.
+            file_content = []
+            for url in file_urls or []:
+                file_content += requests.get(url, timeout=10).content
 
-            return (primitive_content, bytes(file_content))
+        return primitive_content, bytes(file_content)
 
-        return function
 
     def _next_target(self, module_name, function_name) -> Endpoint | None:
         '''
@@ -233,18 +275,55 @@ class Deployment:
             else:
                 print('File already at mount location:', host_path)
     
+    @staticmethod
+    def _remote_endpoint_call(
+        remote: Endpoint,
+        input_data: bytes,
+    ):
+        '''Call the given remote endpoint with input and return its response'''
+        # Pass possible input.
+        input_args, input_files = None, None
+        if len(remote.request.parameters) > 0:
+            input_args = {}
+            int32s = (input_data[i:i+4] for i in range(0, len(input_data), 4))
+            for param, arg in zip(remote.request.parameters, int32s):
+                # TODO: Instead of assuming the bytes are 4-byte unsigned integers,
+                # interpret the type from attached schema.
+                input_args[param["name"]] = struct.unpack("<I", arg)[0]
+        if remote.request.request_body is not None:
+            # Find the possible input file(name) that the target endpoint expects.
 
-    def remote_call(
+            # TODO: Should separate between file stages, but endpoint 
+            # does not contain that info. HARDCODED TO SECOND ELEMENT!
+            props_iter = iter(remote.request.request_body.schema.properties.keys())
+            next(props_iter, None) # Skip first.
+            input_mount_path = next(props_iter, None)
+
+            input_files = {input_mount_path: io.BytesIO(input_data)} \
+                if input_mount_path is not None \
+                else {}
+
+        # Use the CallData here just to skip some manual steps.
+        call = CallData.from_endpoint(remote, input_args, files=input_files)
+        resp = getattr(requests, remote.method)(
+            call.url,
+            timeout=10,
+            files=call.files,
+            headers=call.headers,
+        )
+
+        return resp
+
+
+    def _remote_procedure_call(
         self,
         module_name,
         function_name,
         input_data: bytes,
     ):
         '''
-        Call a peer's module's function with input data and return the response.
-
-        NOTE: Only a list of bytes is supported as the callable  function's
-        input!
+        Call a module's function (where ever it is located) with input data and
+        return the response.
         '''
         # Try local endpoint first, as it would be faster.
         local_endpoint = self.endpoints \
@@ -261,38 +340,7 @@ class Deployment:
         else:
             target_endpoint = local_endpoint
 
-        # Pass possible input.
-        input_args, input_files = None, None
-        if len(target_endpoint.request.parameters) > 0:
-            input_args = {}
-            int32s = (input_data[i:i+4] for i in range(0, len(input_data), 4))
-            for param, arg in zip(target_endpoint.request.parameters, int32s):
-                # TODO: Instead of assuming the bytes are 4-byte unsigned integers,
-                # interpret the type from attached schema.
-                input_args[param["name"]] = struct.unpack("<I", arg)[0]
-        if target_endpoint.request.request_body is not None:
-            # Find the possible input file(name) that the target endpoint expects.
-
-            # TODO: Should separate between file stages, but endpoint 
-            # does not contain that info. HARDCODED TO SECOND ELEMENT!
-            props_iter = iter(target_endpoint.request.request_body.schema.properties.keys())
-            next(props_iter, None) # Skip first.
-            input_mount_path = next(props_iter, None)
-
-            input_files = {input_mount_path: io.BytesIO(input_data)} \
-                if input_mount_path is not None \
-                else {}
-
-        # Use the CallData here just to skip some manual steps.
-        call = CallData.from_endpoint(target_endpoint, input_args, files=input_files)
-        resp = getattr(requests, target_endpoint.method)(
-            call.url,
-            timeout=10,
-            files=call.files,
-            headers=call.headers,
-        )
-
-        return resp
+        return Deployment._remote_endpoint_call(target_endpoint, input_data)
 
 
     def prepare_for_running(
