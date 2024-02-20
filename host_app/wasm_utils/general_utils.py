@@ -164,7 +164,7 @@ class TakeImageStaticSize(RemoteFunction):
                 _, datatmp = cv2.imencode(".jpg", img)
                 data = datatmp.tobytes()
             except cv2.error as error:
-                temp_path = './fakeWebcam.jpg'
+                temp_path = '/app/fakeWebcam.jpg'
                 print(f"Error reading image (assuming non-Linux system; using file from '{temp_path}' ): ", error)
                 with open(temp_path, "rb") as f:
                     data = f.read()

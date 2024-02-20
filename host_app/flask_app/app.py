@@ -126,6 +126,7 @@ class RequestEntry():
     work_queued_at: datetime
     result: Any = None
     success: bool = False
+    redirected: bool = False
 
     def __post_init__(self):
         self.request_id = next_request_id(self.deployment_id, self.module_name, self.function_name)
@@ -489,20 +490,6 @@ def peer_has_module(deployment_id, module_name):
         and module_name in deployments[deployment_id].peers
 
 
-def peer_resource(deployment_id, module_name, function_name, filename, args) -> str | None:
-    '''Return redirection URL if the namepath exists on a known peer device.'''
-    if  peer_has_module(deployment_id, module_name) \
-        and function_name in deployments[deployment_id].peers[module_name] \
-        and len(deployments[deployment_id].peers[module_name][function_name]) > 0 \
-    :
-        # NOTE: Selecting the first peer in order.
-        peer = deployments[deployment_id].peers[module_name][function_name][0]
-        peer_url = peer.url + peer.path + '/' + (filename if filename else '')
-        query_string = '&'.join(f'{k}={v}' for k, v in args.items())
-        return f'{peer_url}?{query_string}'
-    return None
-
-
 @bp.route('/<deployment_id>/')
 def deployment_index(deployment_id):
     '''
@@ -593,17 +580,48 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
         # some useful value is found).
         return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
 
-    if (peer_url := peer_resource(
-        deployment_id,
+    # At this point, the function must be on another device, so redirect caller
+    # there.
+
+    # NOTE: Just calling redirect(url) would be a bit nicer (client
+    # could connect to the actual server directly), but web browser
+    # prevents making calls to different hosts with Javascript. Calling
+    # the endpoint here at the server goes around the browser, but still
+    # we TODO should try to deal securely with same-origin policy...
+
+    primitive, files_bytes = deployments[deployment_id].m2m(
         module_name,
         function_name,
-        filename,
-        request.args,
-    )): 
-        # TODO
-        raise NotImplementedError
+        request.data,
+        list(map(int, request.args.values())),
+    )
+    # Write the results to local and respond like it originated
+    # from this server in order to TODO go around browser same-origin policy.
+    temp_name = "temp_name"
+    redir_result_file = f"{temp_name}._redirected"
+    # Use the directory of the entry.
+    redirect_result_path = per_request_file_path(entry.request_id, redir_result_file)
+    redirect_result_path.parent.mkdir(exist_ok=True, parents=True)
+    with open(redirect_result_path, 'wb') as f:
+        f.write(files_bytes)
 
-    return jsonify({ 'resultUrl': results_route(entry.request_id, full=True) })
+    entry.redirected = True
+    entry.success = True
+    entry.result = [
+        primitive,
+        [
+            results_route(
+                entry.request_id,
+                full=True,
+                file=redir_result_file,
+            )
+        ]
+    ]
+
+    request_history.append(entry)
+    return jsonify({
+        "resultUrl": results_route(entry.request_id, full=True)
+    })
 
 
 @bp.route('/<deployment_id>/stream/modules/<module_name>/<function_name>', methods=["GET"])
@@ -729,8 +747,12 @@ def deployment_create():
     runtimes = {}
     for m in module_configs:
         # Do not re-initialize existing runtimes.
-        if data["deploymentId"] in deployments:
-            runtimes[m.name] = deployments[data["deploymentId"]].runtimes[m.name]
+        deployment = deployments.get(data["deploymentId"], {})
+        runtimes_ = getattr(deployment, "runtimes", {})
+        module_runtime = runtimes_.get(m.name, None)
+
+        if module_runtime is not None:
+            runtimes[m.name] = module_runtime
         else:
             runtimes[m.name] = WasmtimeRuntime([str(module_mount_path(m.name))])
 
