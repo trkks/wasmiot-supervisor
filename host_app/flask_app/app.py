@@ -170,16 +170,23 @@ def do_wasm_work(entry: RequestEntry):
         entry.request_args,
         entry.request_files
     )
-    # Force other callers to this module to wait.
+
+    # Wait for a possible redeployment to finish and release the deployment
+    # lock.
+    if hasattr(deployment, 'lock'):
+        deployment.lock.acquire()
+
+    # Force calls to this module to wait.
     if not hasattr(module, 'lock'):
         module.lock = threading.Lock()
+    logger.debug("Acquiring module lock for %r", module.name)
     module.lock.acquire()
 
     logger.debug("Running Wasm function %r", entry.function_name)
     raw_output = module.run_function(entry.function_name, wasm_args)
     logger.debug("... Result: %r", raw_output, extra={"raw_output": raw_output})
 
-    # Release the module immediately once its used.
+    # Release the deployment immediately once the module has finished.
     module.lock.release()
 
     # Do the next call, passing chain along and return immediately (i.e. the
@@ -478,10 +485,9 @@ def request_history_list(request_id=None):
 
 def name_is_local(deployment_id, module_name, function_name=None):
     '''Return True if the namepath exists locally.'''
-    return deployment_id in deployments \
-        and module_name in deployments[deployment_id].modules
-        # TODO: Should check for function name also, but for that a Wasm
-        # instance is needed.
+    return deployments[deployment_id] \
+        .local_endpoint(module_name, function_name) \
+        is not None
 
 
 def peer_has_module(deployment_id, module_name):
@@ -588,7 +594,7 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
     # prevents making calls to different hosts with Javascript. Calling
     # the endpoint here at the server goes around the browser, but still
     # we TODO should try to deal securely with same-origin policy...
-
+    logger.debug('Redirecting execution of %r/%r to a peer', module_name, function_name)
     primitive, files_bytes = deployments[deployment_id].m2m(
         module_name,
         function_name,
@@ -699,6 +705,33 @@ def deployment_delete(deployment_id):
         return jsonify({'status': 'success'})
     return endpoint_failed(request, 'deployment does not exist', 404)
 
+def reconfigure(deployment, module_configs) -> list[ModuleConfig]:
+    '''
+    Perform actions needed before accepting a redeployment.
+
+    Return updated list of module configs.
+    '''
+    if not hasattr(deployment, 'lock'):
+        deployment.lock = threading.Lock()
+    # In order to not change deployment mid-execution, wait for previously
+    # started execution to finish.
+    deployment.lock.acquire()
+
+    deployed_module_names = {m.name for m in module_configs}
+    # NOTE: To handle migrations, keep the already existing module configurations intact.
+    existing_module_names = {m.name for m in deployment.modules.values()}
+    new_module_configs = filter(
+        lambda x: x.name not in existing_module_names,
+        module_configs
+    )
+    # Remove those old modules, that are _not_ in the new deployment.
+    old_module_configs = filter(
+        lambda x: x.name in deployed_module_names,
+        deployment._modules
+    )
+    return list(new_module_configs) + list(old_module_configs)
+
+
 @bp.route('/deploy', methods=['POST'])
 def deployment_create():
     '''
@@ -729,34 +762,20 @@ def deployment_create():
     # are able to use. This way when file-access is granted via runtime, modules
     # will only access their own directories.
 
-    if data["deploymentId"] in deployments:
-        deployed_module_names = {m.name for m in module_configs}
-        # NOTE: To handle migrations, keep the already existing module configurations intact.
-        existing_module_names = {m.name for m in deployments[data["deploymentId"]].modules.values()}
-        new_module_configs = filter(
-            lambda x: x.name not in existing_module_names,
-            module_configs
-        )
-        # Remove those old modules, that are _not_ in the new deployment.
-        old_module_configs = filter(
-            lambda x: x.name in deployed_module_names,
-            deployments[data["deploymentId"]]._modules
-        )
-        module_configs = list(new_module_configs) + list(old_module_configs)
+    deployment = deployments.get(data["deploymentId"], None)
+    if deployment is not None:
+        module_configs = reconfigure(deployment, module_configs)
 
     runtimes = {}
-    for m in module_configs:
+    for mod in module_configs:
         # Do not re-initialize existing runtimes.
-        deployment = deployments.get(data["deploymentId"], {})
-        runtimes_ = getattr(deployment, "runtimes", {})
-        module_runtime = runtimes_.get(m.name, None)
-
-        if module_runtime is not None:
-            runtimes[m.name] = module_runtime
+        if deployment is not None and \
+            mod.name in deployment.runtimes:
+            runtimes[mod.name] = deployment.runtimes[mod.name]
         else:
-            runtimes[m.name] = WasmtimeRuntime([str(module_mount_path(m.name))])
+            runtimes[mod.name] = WasmtimeRuntime([str(module_mount_path(mod.name))])
 
-    deployments[data["deploymentId"]] = Deployment(
+    new_deployment = Deployment(
         data["orchestratorApiBase"],
         data["deploymentId"],
         runtimes=runtimes,
@@ -766,6 +785,12 @@ def deployment_create():
         _instructions=data["instructions"],
         _mounts=data["mounts"],
     )
+
+    if deployment is not None:
+        # Release deployment after reconfiguration has finished.
+        deployment.lock.release()
+
+    deployments[data["deploymentId"]] = new_deployment
 
     # If the fetching did not fail (that is, crash), return success.
     return jsonify({'status': 'success'})

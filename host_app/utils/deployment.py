@@ -315,6 +315,17 @@ class Deployment:
         return resp
 
 
+    def local_endpoint(self, module_name, function_name=None) -> Endpoint | list[Endpoint] | None:
+        '''
+        Return a locally existing endpoint, multiple if function_name is None.
+        Otherwise None.
+        '''
+        endpoints = self.endpoints.get(module_name, {})
+        if function_name is None:
+            return list(endpoints.values())
+        return endpoints.get(function_name, None)
+
+
     def _remote_procedure_call(
         self,
         module_name,
@@ -326,9 +337,8 @@ class Deployment:
         return the response.
         '''
         # Try local endpoint first, as it would be faster.
-        local_endpoint = self.endpoints \
-            .get(module_name, {}) \
-            .get(function_name, None)
+        local_endpoint = self.local_endpoint(module_name, function_name)
+
         if local_endpoint is None:
             # Try remote instead.
             remote_endpoint = self.peers \
