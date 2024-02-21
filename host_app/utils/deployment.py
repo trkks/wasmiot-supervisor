@@ -317,11 +317,12 @@ class Deployment:
 
     def local_endpoint(self, module_name, function_name=None) -> Endpoint | list[Endpoint] | None:
         '''
-        Return a locally existing endpoint, multiple if function_name is None.
+        Return a locally existing endpoint, multiple (i.e. non empty list) if
+        function_name is None.
         Otherwise None.
         '''
         endpoints = self.endpoints.get(module_name, {})
-        if function_name is None:
+        if function_name is None and bool(endpoints):
             return list(endpoints.values())
         return endpoints.get(function_name, None)
 

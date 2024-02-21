@@ -667,8 +667,8 @@ def stream_module_function(deployment_id, module_name, function_name):
 @bp.route('/<deployment_id>/migrate/<module_name>', methods=['POST'])
 def evict_module(deployment_id, module_name):
     '''
-    Request starting the process of moving a module away from this device to
-    another.
+    Request starting the process of moving a module away from the device it
+    currently resides on.
     '''
     if name_is_local(deployment_id, module_name):
         logger.info('Requesting the eviction of module "%s" held locally', module_name)
