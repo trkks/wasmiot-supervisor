@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 import os
-from typing import Any, List, Optional, Tuple, Callable
+from typing import Any, List, Optional, Tuple
+import logging
 
 from wasmtime import (
     Config, Engine, Func, FuncType, Instance, Linker, Memory, Module,
@@ -16,6 +17,10 @@ from host_app.wasm_utils.general_utils import (
 from host_app.wasm_utils.wasm_api import (
     WasmRuntime, WasmModule, ModuleConfig, IncompatibleWasmModule
 )
+
+
+FLASK_APP = os.environ["FLASK_APP"]
+logger = logging.getLogger(FLASK_APP)
 
 SERIALIZED_MODULE_POSTFIX = ".SERIALIZED.wasm"
 
@@ -34,7 +39,7 @@ class WasmtimeRuntime(WasmRuntime):
         # Open directories for the module to access at its root.
         for data_dir in data_dirs:
             guest_dir = "."
-            print(f"Mounting {data_dir} to {guest_dir}")
+            logger.info(f"Mounting {data_dir} to {guest_dir}")
             self._wasi.preopen_dir(data_dir, guest_dir)
         self._store.set_wasi(self._wasi)
 
@@ -58,7 +63,7 @@ class WasmtimeRuntime(WasmRuntime):
     def load_module(self, module: ModuleConfig) -> Optional[WasmtimeModule]:
         """Load a module into the Wasm runtime."""
         if module.name in self.modules:
-            print(f"Module {module.name} already loaded!")
+            logger.info(f"Module {module.name} already loaded!")
             wasm_module = self.modules[module.name]
             if wasm_module is None or not isinstance(wasm_module, WasmtimeModule):
                 return None
@@ -83,7 +88,7 @@ class WasmtimeRuntime(WasmRuntime):
             if module_memory is None:
                 raise RuntimeError(f"Module {module.name} has no memory!")
             block = module_memory.read(self.store, address, address + length)
-            print(f"Read {len(block)} bytes from memory at address {address}")
+            logger.info(f"Read {len(block)} bytes from memory at address {address}")
             return block, None
 
         # TODO: check if there is a way to read from the memory without going through the modules
@@ -93,14 +98,14 @@ class WasmtimeRuntime(WasmRuntime):
             try:
                 return read_from_module(self.modules[module_name])
             except (IndexError, RuntimeError) as error:
-                print(f"Error when reading memory from module {module_name}: {error}")
+                logger.info(f"Error when reading memory from module {module_name}: {error}")
                 error_str = str(error)
         else:
             for _, wasm_module in self.modules.items():
                 try:
                     return read_from_module(wasm_module)
                 except (IndexError, RuntimeError) as error:
-                    print(f"Error when reading memory from module {wasm_module.name}: {error}")
+                    logger.info(f"Error when reading memory from module {wasm_module.name}: {error}")
                     error_str = str(error)
 
         return (
@@ -122,6 +127,7 @@ class WasmtimeRuntime(WasmRuntime):
             if module_memory is None:
                 raise MemoryError
             module_memory.write(self.store, bytes_data, start=address)
+            logger.info(f"Wrote {len(bytes_data)} bytes to memory at address {address}")
             return None
 
         # TODO: check if there is a way to write to the memory without going through the modules
@@ -131,14 +137,14 @@ class WasmtimeRuntime(WasmRuntime):
             try:
                 return write_to_module(self.modules[module_name])
             except (IndexError, RuntimeError) as error:
-                print(f"Error when writing memory using module {module_name}: {error}")
+                logger.info(f"Error when writing memory using module {module_name}: {error}")
                 error_str = str(error)
         else:
             for _, wasm_module in self.modules.items():
                 try:
                     return write_to_module(wasm_module)
                 except (IndexError, RuntimeError) as error:
-                    print(f"Error when writing memory using module {wasm_module.name}: {error}")
+                    logger.info(f"Error when writing memory using module {wasm_module.name}: {error}")
                     error_str = str(error)
 
         return (
@@ -202,23 +208,23 @@ class WasmtimeModule(WasmModule):
     def _get_function(self, function_name: str) -> Optional[Func]:
         """Get a function from the Wasm module. If the function is not found, return None."""
         if self.runtime is None:
-            print("Runtime not set!")
+            logger.info("Runtime not set!")
             return None
         if not isinstance(self.runtime, WasmtimeRuntime):
-            print("Runtime is not Wasmtime!")
+            logger.info("Runtime is not Wasmtime!")
             return None
         if self._instance is None:
-            print("Instance not set!")
+            logger.info("Instance not set!")
             return None
 
         try:
             func = self._instance.exports(self.runtime.store)[function_name]
             if isinstance(func, Func):
                 return func
-            print(f"'{function_name}' is not a function!")
+            logger.info(f"'{function_name}' is not a function!")
             return None
         except RuntimeError:
-            print(f"Function '{function_name}' not found!")
+            logger.info(f"Function '{function_name}' not found!")
             return None
 
     def _get_all_functions(self) -> List[str]:
@@ -255,10 +261,10 @@ class WasmtimeModule(WasmModule):
 
         func = self._get_function(function_name)
         if func is None:
-            print(f"Function '{function_name}' not found!")
+            logger.info(f"Function '{function_name}' not found!")
             return None
 
-        print(f"({self.name}) Running function '{function_name}' with params: {params}")
+        logger.info(f"({self.name}) Running function '{function_name}' with params: {params}")
         if not params:
             return func(self.runtime.store)
         return func(self.runtime.store, *params)
@@ -266,12 +272,12 @@ class WasmtimeModule(WasmModule):
     def _load_module(self) -> None:
         """Load the Wasm module into the Wasm runtime."""
         if self.runtime is None:
-            print("Runtime not set!")
+            logger.info("Runtime not set!")
             return
         if not isinstance(self.runtime, WasmtimeRuntime):
             return None
         if self.runtime.linker is None:
-            print("Linker not set!")
+            logger.info("Linker not set!")
             return
 
         path_serial = self.path + SERIALIZED_MODULE_POSTFIX
@@ -282,7 +288,7 @@ class WasmtimeModule(WasmModule):
             # try to load the module from the serialized version
             module = Module.deserialize_file(self.runtime.engine, path_serial)
         except (IOError, WasmtimeError):
-            print("Could not load serialized module, compiling from source")
+            logger.info("Could not load serialized module, compiling from source")
             # compile the module which can be a slow process
             module = Module.from_file(self.runtime.engine, self.path)
             # write a serialized version of the module to disk for later use
@@ -291,7 +297,7 @@ class WasmtimeModule(WasmModule):
                 with open(path_serial, "wb") as serialized_module:
                     serialized_module.write(byte_module)
             except IOError as error:
-                print(error)
+                logger.info(error)
 
         self._module = module
         self._instance = self.runtime.linker.instantiate(self.runtime.store, module)
