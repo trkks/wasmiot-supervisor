@@ -15,6 +15,7 @@ from host_app.utils import FILE_TYPES
 class SchemaType(Enum):
     """OpenAPI v.3.0 schema type"""
     INTEGER = 'integer'
+    FLOAT = 'float'
     STRING = 'string'
     OBJECT = 'object'
 
