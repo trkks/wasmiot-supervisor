@@ -156,18 +156,27 @@ class TakeImageStaticSize(RemoteFunction):
             Read the size of the image from size_ptr (32bit LSB) and store the
             image in out_ptr.
             """
-            cam = cv2.VideoCapture(0)  # type: ignore
-            _, img = cam.read()
-            cam.release()
+            # Try some webcams until a working one is found.
+            error = None
+            data = None
+            for i in range(6):
+                cam = cv2.VideoCapture(i)  # type: ignore
+                _, img = cam.read()
+                cam.release()
 
-            try:
-                _, datatmp = cv2.imencode(".jpg", img)
-                data = datatmp.tobytes()
-            except cv2.error as error:
+                try:
+                    _, datatmp = cv2.imencode(".jpg", img)
+                    data = datatmp.tobytes()
+                    break
+                except cv2.error as err:
+                    logger.warn(f"The camera at index {i} did not work")
+                    error = err
+            else:
                 temp_path = '/app/fakeWebcam.jpg'
                 print(f"Error reading image (assuming non-Linux system; using file from '{temp_path}' ): ", error)
                 with open(temp_path, "rb") as f:
                     data = f.read()
+
 
             # Read the required size from memory.
             out_len_bytes, fail = self.runtime.read_from_memory(size_ptr, 4, self.runtime.current_module_name)

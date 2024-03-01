@@ -332,9 +332,9 @@ def init_wasm_worker():
     def teardown_worker():
         """Signal the worker thread to stop and wait for it to finish."""
         wasm_queue.put(None)
-        logger.debug("Waiting for the worker thread to finish...", end="")
+        logger.debug("Waiting for the worker thread to finish...")
         wasm_worker_thread.join()
-        logger.debug("worker thread finished!")
+        logger.debug("Worker thread finished!")
 
     # Turn-on the worker thread.
     wasm_worker_thread = threading.Thread(target=wasm_worker, daemon=True)
