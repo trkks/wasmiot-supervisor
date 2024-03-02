@@ -547,9 +547,9 @@ def deployment_index(deployment_id):
 
         # Respond with the (assumed) index page.
         return send_file(request_entry_path)
-    else:
-        # Respond with the result of execution.
-        return jsonify(entry.result[0])
+
+    # Respond with the result of execution.
+    return jsonify(entry.result[0])
 
 
 def prepare_request_entry(deployment_id, module_name, function_name):
@@ -815,7 +815,7 @@ def prepare_deployment() -> str:
         raise Exception('Non-existent or malformed deployment data')
 
     deployment_id = data["deploymentId"]
-    prepared_deployments[deployment_id] = new_deployment(data)
+    prepared_deployments[deployment_id] = new_deployment(data, deployments.get(deployment_id, None))
     return deployment_id
 
 
