@@ -15,7 +15,7 @@ import threading
 from typing import Any, Dict, Generator, Tuple
 
 import atexit
-from flask import Flask, Blueprint, jsonify, current_app, request, send_file, redirect, url_for, Response
+from flask import Flask, Blueprint, jsonify, current_app, request, send_file, url_for, Response
 from werkzeug.serving import get_sockaddr, select_address_family
 from werkzeug.serving import is_running_from_reloader
 # TODO: Use this whenever doing file I/O:
@@ -72,6 +72,16 @@ deployments = {}
 Mapping of deployment-IDs to instructions for forwarding function results to
 other devices and calling their functions
 """
+prepared_deployments = {}
+'''
+Mapping of deployment-IDs to ready-to-use -instructions that are not yet put to
+use.
+'''
+deployment_locks: dict[str, threading.Lock] = {}
+'''
+Mapping of deployment-IDs to per-deployment locks that are used to block
+requests using the deployment.
+'''
 
 
 def request_counter() -> Generator[int, None, None]:
@@ -161,6 +171,15 @@ def do_wasm_work(entry: RequestEntry):
     not required.
     '''
 
+    if entry.deployment_id in deployment_locks:
+        # Wait for a possible redeployment to finish and release the deployment
+        # lock immediately after. Kinda like "barrier"-synchronization.
+        dlock = deployment_locks[entry.deployment_id]
+        logger.debug("Acquiring deployment lock for %r", entry.deployment_id)
+        dlock.acquire()
+        logger.debug("Releasing deployment lock for %r", entry.deployment_id)
+        dlock.release()
+
     deployment = deployments[entry.deployment_id]
 
     logger.debug("Preparing Wasm module %r", entry.module_name)
@@ -170,11 +189,6 @@ def do_wasm_work(entry: RequestEntry):
         entry.request_args,
         entry.request_files
     )
-
-    # Wait for a possible redeployment to finish and release the deployment
-    # lock.
-    if hasattr(deployment, 'lock'):
-        deployment.lock.acquire()
 
     # Force calls to this module to wait.
     if not hasattr(module, 'lock'):
@@ -186,7 +200,8 @@ def do_wasm_work(entry: RequestEntry):
     raw_output = module.run_function(entry.function_name, wasm_args)
     logger.debug("... Result: %r", raw_output, extra={"raw_output": raw_output})
 
-    # Release the deployment immediately once the module has finished.
+    # Release the module lock immediately after exec.
+    logger.debug("Releasing module lock for %r", module.name)
     module.lock.release()
 
     # Do the next call, passing chain along and return immediately (i.e. the
@@ -226,11 +241,15 @@ def do_wasm_work(entry: RequestEntry):
         return this_result
 
     sub_resp = call_endpoint(next_call, entry.module_name)
+
     return sub_resp.json()["resultUrl"]
 
 
-def make_history(entry: RequestEntry):
-    '''Add results of execution of work to the entry and then append it to request history.'''
+def exec_log(entry: RequestEntry):
+    '''
+    Execute work described by the entry and add its result to the request
+    history (i.e., the "log").
+    '''
     try:
         entry.result = do_wasm_work(entry)
         entry.success = True
@@ -246,7 +265,7 @@ def make_history(entry: RequestEntry):
 def wasm_worker():
     '''Constantly try dequeueing work for using WebAssembly modules'''
     while entry := wasm_queue.get():
-        make_history(entry)
+        exec_log(entry)
         wasm_queue.task_done()
 
 def create_app(*args, **kwargs) -> Flask:
@@ -577,7 +596,7 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
     if name_is_local(deployment_id, module_name, function_name):
         # Assume that the work wont take long and do it synchronously on GET.
         if request.method.lower() == 'get':
-            make_history(entry)
+            exec_log(entry)
         else:
             # Send data to worker thread to handle non-blockingly.
             wasm_queue.put(entry)
@@ -589,6 +608,17 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
     # At this point, the function must be on another device, so redirect caller
     # there.
 
+    # XXX HACK-y:
+    # In order to not get deadlocked on redirecting between peers (i.e., both
+    # devices think they are not responsible), respond with 404 if the request
+    # is from current host to itself, but was not found locally (because not yet
+    # deployed).
+    rargs = dict(request.args)
+    if "__wasmiot_rpc" in rargs:
+        rargs.pop("__wasmiot_rpc")
+        if rargs["__wasmiot_rpc"] == "local":
+            return endpoint_failed(request, "risk of endless peer-redirections; maybe in the middle of redeployment", 404)
+
     # NOTE: Just calling redirect(url) would be a bit nicer (client
     # could connect to the actual server directly), but web browser
     # prevents making calls to different hosts with Javascript. Calling
@@ -599,7 +629,7 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
         module_name,
         function_name,
         request.data,
-        list(map(int, request.args.values())),
+        list(map(int, rargs.values())),
     )
     # Write the results to local and respond like it originated
     # from this server in order to TODO go around browser same-origin policy.
@@ -644,7 +674,7 @@ def stream_module_function(deployment_id, module_name, function_name):
 
     if name_is_local(deployment_id, module_name, function_name):
         # Assume that the work wont take long and do it synchronously on GET.
-        make_history(entry)
+        exec_log(entry)
         if not entry.success:
             return endpoint_failed(request, "failure running Wasm:" + entry.result)
         primitive, files = entry.result
@@ -705,24 +735,22 @@ def deployment_delete(deployment_id):
         return jsonify({'status': 'success'})
     return endpoint_failed(request, 'deployment does not exist', 404)
 
-def reconfigure(deployment, module_configs) -> list[ModuleConfig]:
+
+def updated_configs(deployment, incoming_modules: list[ModuleConfig]) -> list[ModuleConfig]:
     '''
-    Perform actions needed before accepting a redeployment.
+    For a deployment's modules:
+    - Add new ones.
+    - Keep old ones _intact_ if they still are listed in new ones.
+    - Remove old ones no longer needed.
 
     Return updated list of module configs.
     '''
-    if not hasattr(deployment, 'lock'):
-        deployment.lock = threading.Lock()
-    # In order to not change deployment mid-execution, wait for previously
-    # started execution to finish.
-    deployment.lock.acquire()
-
-    deployed_module_names = {m.name for m in module_configs}
+    deployed_module_names = {m.name for m in incoming_modules}
     # NOTE: To handle migrations, keep the already existing module configurations intact.
     existing_module_names = {m.name for m in deployment.modules.values()}
     new_module_configs = filter(
         lambda x: x.name not in existing_module_names,
-        module_configs
+        incoming_modules
     )
     # Remove those old modules, that are _not_ in the new deployment.
     old_module_configs = filter(
@@ -732,16 +760,12 @@ def reconfigure(deployment, module_configs) -> list[ModuleConfig]:
     return list(new_module_configs) + list(old_module_configs)
 
 
-@bp.route('/deploy', methods=['POST'])
-def deployment_create():
+def new_deployment(manifest, old_one: Deployment | None = None) -> Deployment:
     '''
-    Request content-type needs to be 'application/json'
-    - POST: Parses the deployment from request and enacts it.
+    Create a new deployment based on manifest. Reuse some existing resources
+    from an old deployment.
     '''
-    data = request.get_json(silent=True)
-    if not data:
-        return jsonify({'message': 'Non-existent or malformed deployment data'})
-    modules = data['modules']
+    modules = manifest['modules']
 
     if not modules:
         return jsonify({'message': 'No modules listed'})
@@ -762,38 +786,93 @@ def deployment_create():
     # are able to use. This way when file-access is granted via runtime, modules
     # will only access their own directories.
 
-    deployment = deployments.get(data["deploymentId"], None)
-    if deployment is not None:
-        module_configs = reconfigure(deployment, module_configs)
+    if old_one:
+        module_configs = updated_configs(old_one, module_configs)
 
     runtimes = {}
     for mod in module_configs:
         # Do not re-initialize existing runtimes.
-        if deployment is not None and \
-            mod.name in deployment.runtimes:
-            runtimes[mod.name] = deployment.runtimes[mod.name]
+        if old_one and (mod.name in old_one.runtimes):
+            runtimes[mod.name] = old_one.runtimes[mod.name]
         else:
             runtimes[mod.name] = WasmtimeRuntime([str(module_mount_path(mod.name))])
 
-    new_deployment = Deployment(
-        data["orchestratorApiBase"],
-        data["deploymentId"],
+    return Deployment(
+        manifest["orchestratorApiBase"],
+        manifest["deploymentId"],
         runtimes=runtimes,
-        endpoints=data["endpoints"],
-        peers=data["peers"],
+        endpoints=manifest["endpoints"],
+        peers=manifest["peers"],
         _modules=module_configs,
-        _instructions=data["instructions"],
-        _mounts=data["mounts"],
+        _instructions=manifest["instructions"],
+        _mounts=manifest["mounts"],
     )
 
-    if deployment is not None:
-        # Release deployment after reconfiguration has finished.
-        deployment.lock.release()
+def prepare_deployment() -> str:
+    '''Add a new prepared deployment based on request'''
+    data = request.get_json(silent=True)
+    if not data:
+        raise Exception('Non-existent or malformed deployment data')
 
-    deployments[data["deploymentId"]] = new_deployment
+    deployment_id = data["deploymentId"]
+    prepared_deployments[deployment_id] = new_deployment(data)
+    return deployment_id
 
-    # If the fetching did not fail (that is, crash), return success.
+
+@bp.route('/deploy', methods=['POST'])
+def deployment_create():
+    '''
+    Request content-type needs to be 'application/json'
+    - POST: Parses the deployment from request and enacts it.
+    '''
+    try:
+        deployment_id = prepare_deployment()
+    except Exception as err:
+        return endpoint_failed(request, str(err), 400)
+
+    # Remove the prepared deployment immediately, putting it into use.
+    deployments[deployment_id] = prepared_deployments.pop(deployment_id)
+    deployment_locks[deployment_id] = threading.Lock()
+
     return jsonify({'status': 'success'})
+
+
+@bp.route('/deploy/prepare', methods=['POST'])
+def deployment_prepare():
+    '''
+    Create a new deployment but hold it in a temporary collection, making it
+    not usable yet by execution requests.
+    
+    Used to redeploy mid execution.
+    '''
+    try:
+        _ = prepare_deployment()
+    except Exception as err:
+        return endpoint_failed(request, str(err), 400)
+
+    return jsonify({'status': 'success'})
+
+
+@bp.route('/deploy/release/<deployment_id>', methods=['PUT'])
+def deployment_release(deployment_id):
+    '''
+    Replace a deployment with a new one that was put on hold previously,
+    allowing execution requests to use the updated version.
+    '''
+    # Prevent any requests to this deployment from starting before new
+    # instructions are set.
+    if deployment_id in deployment_locks:
+        deployment_locks[deployment_id].acquire()
+
+    # Set the new instructions.
+    deployments[deployment_id] = prepared_deployments.pop(deployment_id)
+
+    # Allow the requests to continue.
+    if deployment_id in deployment_locks:
+        deployment_locks[deployment_id].release()
+
+    return jsonify({'status': 'success'})
+
 
 def fetch_modules(modules) -> list[ModuleConfig]:
     """
