@@ -155,13 +155,12 @@ class Deployment:
                 primitive_content, file_urls = json_["result"]
                 break
             except ValueError:
-                n = i * 2
-                logger.info("Sleeping %d seconds because M2M request #%d failed", n, i)
-                time.sleep(n)
-                pass
+                waitsecs = i * 2
+                logger.info("Sleeping %d seconds because M2M request #%d failed", waitsecs, i)
+                time.sleep(waitsecs)
         else:
             logger.error("Failed result queries (last: %r)", sub_result)
-            raise RuntimeError("M2M failed")
+            raise RuntimeError("M2M result reading failed")
         return primitive_content, file_urls
  
 
@@ -169,15 +168,15 @@ class Deployment:
         # Try a couple times, waiting for the result to be ready
         primitive_content, file_content = None, None
         for i in range(1, 5):
-            first_resp = self._remote_procedure_call(module_name, function_name, input_data)
+            exec_resp = self._remote_procedure_call(module_name, function_name, input_data)
             # Wait in case the execution aborted because of potential redeployment.
-            if first_resp.status_code != 200:
-                n = i * 2
-                logger.info("Sleeping %d seconds because M2M execution #%d failed", n, i)
-                time.sleep(n)
+            if exec_resp.status_code != 200:
+                waitsecs = i * 2
+                logger.info("Sleeping %d seconds because M2M execution #%d failed", waitsecs, i)
+                time.sleep(waitsecs)
                 continue
 
-            resp = first_resp.json()
+            resp = exec_resp.json()
             if isinstance(resp, (list, tuple)):
                 # The result was returned immediately.
                 primitive_content, file_content = resp
@@ -190,6 +189,10 @@ class Deployment:
                 file_content = []
                 for url in file_urls or []:
                     file_content += requests.get(url, timeout=10).content
+            break
+        else:
+            logger.error("Failed execution queries (last: %r)", sub_result)
+            raise RuntimeError("M2M execution failed")
         return primitive_content, file_content
 
 
