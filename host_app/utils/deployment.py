@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Tuple, Set
 import struct
+import time
 
 import requests
 from wasmtime import WasmtimeError
@@ -143,6 +144,55 @@ class Deployment:
             if module is None:
                 raise RuntimeError("Wasm module could not be loaded!")
 
+    @staticmethod
+    def _fetch_wait_result(result_url):
+        primitive_content, file_urls = None, None
+        # Try a couple times, waiting for the result to be ready
+        for i in range(1, 5):
+            sub_result = requests.get(result_url, timeout=10)
+            try:
+                json_ = sub_result.json()
+                primitive_content, file_urls = json_["result"]
+                break
+            except ValueError:
+                n = i * 2
+                logger.info("Sleeping %d seconds because M2M request #%d failed", n, i)
+                time.sleep(n)
+                pass
+        else:
+            logger.error("Failed result queries (last: %r)", sub_result)
+            raise RuntimeError("M2M failed")
+        return primitive_content, file_urls
+ 
+
+    def _fetch_wait_redeployment(self, module_name, function_name, input_data):
+        # Try a couple times, waiting for the result to be ready
+        primitive_content, file_content = None, None
+        for i in range(1, 5):
+            first_resp = self._remote_procedure_call(module_name, function_name, input_data)
+            # Wait in case the execution aborted because of potential redeployment.
+            if first_resp.status_code != 200:
+                n = i * 2
+                logger.info("Sleeping %d seconds because M2M execution #%d failed", n, i)
+                time.sleep(n)
+                continue
+
+            resp = first_resp.json()
+            if isinstance(resp, (list, tuple)):
+                # The result was returned immediately.
+                primitive_content, file_content = resp
+            elif isinstance(resp, dict):
+                # Otherwise the result needs to be queried (when it's finished).
+                result_url = resp["resultUrl"]
+                sub_result = None
+                primitive_content, file_urls = Deployment._fetch_wait_result(result_url)
+               # TODO: Fetch and concatenate all the output files.
+                file_content = []
+                for url in file_urls or []:
+                    file_content += requests.get(url, timeout=10).content
+        return primitive_content, file_content
+
+
     def m2m(
         self,
         module_name,
@@ -160,33 +210,7 @@ class Deployment:
         for arg in args:
             arg_bytes += struct.pack("<I", arg)
         input_data = arg_bytes + input_data
-        first_resp = self._remote_procedure_call(module_name, function_name, input_data)
-        resp = first_resp.json()
-        if isinstance(resp, (list, tuple)):
-            # The result was returned immediately.
-            primitive_content, file_content = resp
-        elif isinstance(resp, dict):
-            # Otherwise the result needs to be queried (when it's finished).
-            result_url = resp["resultUrl"]
-            sub_result = None
-            primitive_content, file_urls = None, None
-            # Try a couple times, waiting for the result to be ready
-            for _ in range(3):
-                sub_result = requests.get(result_url, timeout=10)
-                try:
-                    json_ = sub_result.json()
-                    primitive_content, file_urls = json_["result"]
-                    break
-                except ValueError:
-                    pass
-            else:
-                logger.error("Failed result queries (last: %r)", sub_result)
-                raise RuntimeError("M2M failed")
-            # TODO: Fetch and concatenate all the output files.
-            file_content = []
-            for url in file_urls or []:
-                file_content += requests.get(url, timeout=10).content
-
+        primitive_content, file_content = self._fetch_wait_redeployment(module_name, function_name, input_data)
         return primitive_content, bytes(file_content)
 
 
@@ -279,6 +303,7 @@ class Deployment:
     def _remote_endpoint_call(
         remote: Endpoint,
         input_data: bytes,
+        is_local: bool,
     ):
         '''Call the given remote endpoint with input and return its response'''
         # Pass possible input.
@@ -302,6 +327,11 @@ class Deployment:
             input_files = {input_mount_path: io.BytesIO(input_data)} \
                 if input_mount_path is not None \
                 else {}
+
+        # XXX HACK Add a flag to indicate, that this request should not be
+        # directed to a peer when received.
+        if is_local:
+            input_args["__wasmiot_rpc"] = "local"
 
         # Use the CallData here just to skip some manual steps.
         call = CallData.from_endpoint(remote, input_args, files=input_files)
@@ -348,10 +378,12 @@ class Deployment:
             if remote_endpoint is None:
                 raise RuntimeError(f"RPC '{module_name}/{function_name}'does not exist")
             target_endpoint = remote_endpoint
+            is_local = False
         else:
             target_endpoint = local_endpoint
+            is_local = True
 
-        return Deployment._remote_endpoint_call(target_endpoint, input_data)
+        return Deployment._remote_endpoint_call(target_endpoint, input_data, is_local)
 
 
     def prepare_for_running(

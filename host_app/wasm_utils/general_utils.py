@@ -169,7 +169,7 @@ class TakeImageStaticSize(RemoteFunction):
                     data = datatmp.tobytes()
                     break
                 except cv2.error as err:
-                    logger.warn(f"The camera at index {i} did not work")
+                    logger.debug("The camera at index %d did not work", i)
                     error = err
             else:
                 temp_path = '/app/fakeWebcam.jpg'
