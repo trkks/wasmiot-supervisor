@@ -13,6 +13,7 @@ from pathlib import Path
 import queue
 import threading
 from typing import Any, Dict, Generator, Tuple
+import time
 
 import atexit
 from flask import Flask, Blueprint, jsonify, current_app, request, send_file, url_for, Response
@@ -34,27 +35,18 @@ from host_app.utils.mount import MountPathFile
 from host_app.utils.call import CallData, call_endpoint
 
 
+SIM_MAX_LATENCY_SECS = None
+'''Set some max-latency of selected requests for simulating physical environment'''
+try:
+    SIM_MAX_LATENCY_SECS = float(os.environ.get('SIMULATED_LATENCY'))
+except:
+    pass
+
 _MODULE_DIRECTORY = 'wasm-modules'
 _PARAMS_FOLDER = 'wasm-params'
 _OUTPUT_FOLDER = "wasm-output-files"
 INSTANCE_PARAMS_FOLDER = None
 INSTANCE_OUTPUT_FOLDER = None
-
-OUTPUT_LENGTH_BYTES = 32 // 8
-"""
-Size in bytes of the length-type used to represent the size of the block of Wasm
-memory containing output result of an executed WebAssembly function. e.g.
-a block of 257 bytes can be enumerated with a 2 byte type such as a 16bit
-integer but not with 1 byte.
-"""
-
-ALLOC_NAME = "alloc"
-"""
-Name used for the memory-allocation function that should be found in most every
-WebAssembly module up for execution. Should have one parameter, which is the
-length in bytes of the memory to allocate and returns beginning address of the
-allocated block.
-"""
 
 @dataclass
 class FetchFailures(Exception):
@@ -493,6 +485,12 @@ def request_history_file_list(request_id, filename=None):
 @bp.route('/' + results_route('<request_id>'))
 def request_history_list(request_id=None):
     '''Return a list of or a specific entry result of a previous execution call'''
+
+    if SIM_MAX_LATENCY_SECS is not None:
+        waitsecs = random.random() * SIM_MAX_LATENCY_SECS
+        logger.info('%f second simulated latency on request history route', waitsecs)
+        time.sleep(waitsecs)
+
     if request_id is None:
         return jsonify(path_to_link(request_history))
     if not (match := find_request(request_id)):
@@ -585,6 +583,11 @@ def run_module_function(deployment_id, module_name, function_name, filename=None
     Execute the function in WebAssembly module and act based on instructions
     attached to the deployment of this call/execution.
     '''
+
+    if SIM_MAX_LATENCY_SECS is not None:
+        waitsecs = random.random() * SIM_MAX_LATENCY_SECS
+        logger.info('%f second simulated latency on execution route', waitsecs)
+        time.sleep(waitsecs)
 
     if filename:
         # If a filename is passed, this route works merely for file serving.
